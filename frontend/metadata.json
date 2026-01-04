@@ -1,0 +1,5 @@
+{
+  "name": "Copy of Contact Collector SaaS",
+  "description": "A MicroSaaS to collect, clean, manage, and activate sales and prospect contacts from various sources like OCR, forms, and imports. Features dark/light mode and ID/EN language support.",
+  "requestFramePermissions": []
+}
