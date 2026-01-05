@@ -180,7 +180,7 @@ const Overview: React.FC<OverviewProps> = ({ contacts, t, isAdmin }) => {
               </div>
             )}
 
-            <svg className="w-full h-full overflow-visible" viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none">
+            <svg className="w-full h-full overflow-visible" viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="xMidYMid meet">
               <defs>
                 <linearGradient id="lineGradient" x1="0" y1="0" x2="1" y2="0">
                   <stop offset="0%" stopColor="#3b82f6" />
@@ -254,7 +254,7 @@ const Overview: React.FC<OverviewProps> = ({ contacts, t, isAdmin }) => {
                   </div>
                 )}
 
-                <svg className="w-full h-full overflow-visible" viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none">
+                <svg className="w-full h-full overflow-visible" viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="xMidYMid meet">
                   <path d={userAreaPath} fill="url(#areaGradient)" />
                   <path d={userLinePath} fill="none" stroke="url(#lineGradient)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
                   
