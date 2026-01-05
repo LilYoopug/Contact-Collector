@@ -1,12 +1,18 @@
-
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
+
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
 
 export interface ToastMessage {
   id: string;
   type: ToastType;
   message: string;
+  action?: ToastAction;
+  duration?: number; // Custom duration in ms
 }
 
 interface ToastProps {
@@ -25,10 +31,41 @@ const Toast: React.FC<ToastProps> = ({ toasts, removeToast }) => {
 };
 
 const ToastItem: React.FC<{ toast: ToastMessage; onRemove: () => void }> = ({ toast, onRemove }) => {
+  const [progress, setProgress] = useState(100);
+  
+  // Default duration: 5s for action toasts (undo), 3s for regular toasts
+  const duration = toast.duration || (toast.action ? 5000 : 3000);
+
   useEffect(() => {
-    const timer = setTimeout(onRemove, 5000);
-    return () => clearTimeout(timer);
-  }, [onRemove]);
+    const startTime = Date.now();
+    
+    // Update progress bar for action toasts
+    if (toast.action) {
+      const interval = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const remaining = Math.max(0, 100 - (elapsed / duration) * 100);
+        setProgress(remaining);
+        
+        if (remaining === 0) {
+          clearInterval(interval);
+          onRemove();
+        }
+      }, 50);
+
+      return () => clearInterval(interval);
+    } else {
+      // Regular toast - just auto-close after duration
+      const timer = setTimeout(onRemove, duration);
+      return () => clearTimeout(timer);
+    }
+  }, [duration, onRemove, toast.action]);
+
+  const handleActionClick = () => {
+    if (toast.action) {
+      toast.action.onClick();
+      onRemove();
+    }
+  };
 
   const icons = {
     success: (
@@ -60,18 +97,49 @@ const ToastItem: React.FC<{ toast: ToastMessage; onRemove: () => void }> = ({ to
     info: 'bg-white/90 dark:bg-gray-900/90 border-blue-100 dark:border-blue-900/30',
   };
 
+  const progressColors = {
+    success: 'bg-green-500',
+    error: 'bg-red-500',
+    warning: 'bg-amber-500',
+    info: 'bg-blue-500',
+  };
+
   return (
     <div 
-      className={`pointer-events-auto flex items-center gap-4 p-4 rounded-2xl border shadow-2xl backdrop-blur-md animate-in slide-in-from-right-8 duration-300 ${bgColors[toast.type]}`}
+      className={`pointer-events-auto flex flex-col rounded-2xl border shadow-2xl backdrop-blur-md animate-in slide-in-from-right-8 duration-300 overflow-hidden ${bgColors[toast.type]}`}
       role="alert"
     >
-      <div className="shrink-0">{icons[toast.type]}</div>
-      <p className="text-sm font-bold text-gray-800 dark:text-gray-200 flex-1">{toast.message}</p>
-      <button onClick={onRemove} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors">
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-        </svg>
-      </button>
+      <div className="flex items-center gap-4 p-4">
+        <div className="shrink-0">{icons[toast.type]}</div>
+        <p className="text-sm font-bold text-gray-800 dark:text-gray-200 flex-1">{toast.message}</p>
+        
+        {/* Action button (e.g., Undo) */}
+        {toast.action && (
+          <button 
+            onClick={handleActionClick}
+            className="px-3 py-1.5 bg-gray-900/10 dark:bg-white/10 hover:bg-gray-900/20 dark:hover:bg-white/20 rounded-lg font-bold text-xs uppercase tracking-wider text-gray-700 dark:text-gray-200 transition-colors"
+          >
+            {toast.action.label}
+          </button>
+        )}
+        
+        {/* Close button */}
+        <button onClick={onRemove} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      
+      {/* Progress bar for action toasts */}
+      {toast.action && (
+        <div className="h-1 bg-gray-200 dark:bg-gray-700">
+          <div 
+            className={`h-full transition-all duration-100 ease-linear ${progressColors[toast.type]}`}
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      )}
     </div>
   );
 };

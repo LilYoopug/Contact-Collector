@@ -113,9 +113,9 @@ const Header: React.FC<HeaderProps> = ({ user, theme, setTheme, lang, setLang, t
                   className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold text-white sm:w-10 sm:h-10 sm:text-xs shadow-sm hover:scale-105 active:scale-95 transition-all focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 dark:focus:ring-offset-black bg-primary-600 overflow-hidden"
                 >
                   {user?.avatarUrl ? (
-                    <img src={user.avatarUrl} alt={user.fullName} className="w-full h-full object-cover" />
+                    <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
                   ) : (
-                    user ? getInitials(user.fullName) : '??'
+                    user ? getInitials(user.name) : '??'
                   )}
                 </button>
 
@@ -123,7 +123,7 @@ const Header: React.FC<HeaderProps> = ({ user, theme, setTheme, lang, setLang, t
                   <div className="absolute right-0 top-14 w-56 bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-100 dark:border-gray-800 py-2 animate-in fade-in zoom-in-95 slide-in-from-top-2 duration-200">
                     <div className="px-4 py-3 border-b border-gray-50 dark:border-gray-800">
                       <div className="flex items-center gap-2 mb-1">
-                        <p className="text-sm font-bold text-gray-900 dark:text-white truncate">{user.fullName}</p>
+                        <p className="text-sm font-bold text-gray-900 dark:text-white truncate">{user.name}</p>
                         {user.role === UserRole.ADMIN && <span className="w-2 h-2 rounded-full bg-primary-500 animate-pulse"></span>}
                       </div>
                       <p className="text-xs text-gray-500 truncate">{user.email}</p>
@@ -206,13 +206,13 @@ const Header: React.FC<HeaderProps> = ({ user, theme, setTheme, lang, setLang, t
             <div className="flex items-center gap-3 p-3 rounded-2xl border border-gray-100 dark:border-gray-800/50 bg-primary-50/50 dark:bg-primary-900/10">
               <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold uppercase shadow-inner bg-primary-100 text-primary-600 dark:bg-primary-900 overflow-hidden">
                 {user?.avatarUrl ? (
-                  <img src={user.avatarUrl} alt={user.fullName} className="w-full h-full object-cover" />
+                  <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
                 ) : (
-                  user ? getInitials(user.fullName) : '??'
+                  user ? getInitials(user.name) : '??'
                 )}
               </div>
               <div className="flex-1 min-w-0 text-left">
-                <p className="text-sm font-bold text-gray-900 dark:text-white truncate">{user?.fullName}</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-white truncate">{user?.name}</p>
                 <p className="text-[10px] font-black uppercase tracking-widest text-primary-600 dark:text-primary-400">
                   {user ? t(`role_${user.role}`) : 'Role'}
                 </p>

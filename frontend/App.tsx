@@ -10,22 +10,25 @@ import UserManagement from './pages/UserManagement';
 import LandingPage from './pages/LandingPage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
-import Toast, { ToastMessage, ToastType } from './components/Toast';
+import Toast, { ToastMessage, ToastType, ToastAction } from './components/Toast';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { translations, Language } from './i18n';
-import { MOCK_CONTACTS, MOCK_USERS } from './constants';
-import { Contact, User, UserRole, ConsentStatus } from './types';
+import { Contact, User, UserRole } from './types';
 import { SpinnerIcon } from './components/icons';
+import authService, { User as ApiUser } from './services/authService';
+import { contactService } from './services/contactService';
 
 type ViewState = 'landing' | 'login' | 'register' | 'app';
 
 // Unified UI Context
 interface AppContextType {
   showToast: (message: string, type?: ToastType) => void;
+  showUndoToast: (message: string, onUndo: () => void) => void;
   setGlobalLoading: (loading: boolean) => void;
 }
 export const AppContext = createContext<AppContextType>({ 
   showToast: () => {}, 
+  showUndoToast: () => {},
   setGlobalLoading: () => {} 
 });
 export const useAppUI = () => useContext(AppContext);
@@ -39,9 +42,12 @@ function App() {
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [isGlobalProcessing, setIsGlobalProcessing] = useState(false);
   
-  const [contacts, setContacts] = useState<Contact[]>(MOCK_CONTACTS);
-  const [users, setUsers] = useState<User[]>(MOCK_USERS);
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [loadingContacts, setLoadingContacts] = useState(false);
+  const [contactsError, setContactsError] = useState<string | null>(null);
   const [activeNav, setActiveNav] = useState<NavItem>('dashboard');
+  const [sessionMessage, setSessionMessage] = useState<string | null>(null);
+  const [returnToNav, setReturnToNav] = useState<NavItem | null>(null);
 
   const t = useMemo(() => (key: string) => {
     return (translations[lang] as any)[key] || key;
@@ -54,16 +60,122 @@ function App() {
     document.body.className = theme === 'dark' ? 'bg-gray-950' : 'bg-gray-50';
   }, [theme]);
 
-  // Initial app boot simulation
+  // Set up 401 handler on mount
   useEffect(() => {
-    const timer = setTimeout(() => setIsInitialLoading(false), 800);
-    return () => clearTimeout(timer);
+    authService.onUnauthorized((reason) => {
+      // Store current navigation for return after re-login
+      if (view === 'app' && activeNav) {
+        setReturnToNav(activeNav);
+      }
+      
+      // Set session message
+      setSessionMessage(reason || 'Session expired. Please login again.');
+      
+      // Redirect to login
+      setCurrentUser(null);
+      setView('login');
+    });
+  }, [view, activeNav]);
+
+  // Auto-login on app mount - check for existing token and validate
+  useEffect(() => {
+    const initAuth = async () => {
+      if (authService.isAuthenticated()) {
+        try {
+          const apiUser = await authService.getCurrentUser();
+          // Map API user to frontend User type
+          setCurrentUser({
+            id: apiUser.id,
+            name: apiUser.name,
+            email: apiUser.email,
+            phone: apiUser.phone || null,
+            role: apiUser.role === 'admin' ? UserRole.ADMIN : UserRole.USER,
+            avatarUrl: apiUser.avatar_url || null,
+            createdAt: apiUser.created_at,
+            updatedAt: apiUser.created_at,
+            lastLoginAt: new Date().toISOString(),
+            totalContacts: 0, // Will be updated when contacts load
+          });
+          setView('app');
+        } catch (err) {
+          // Token invalid, stay on landing
+          console.log('Auto-login failed, showing landing page');
+          authService.clearToken();
+        }
+      }
+      setIsInitialLoading(false);
+    };
+    
+    initAuth();
   }, []);
 
   const showToast = useCallback((message: string, type: ToastType = 'info') => {
     const id = Math.random().toString(36).substr(2, 9);
     setToasts(prev => [...prev, { id, message, type }]);
   }, []);
+
+  // Show toast with undo action button (for delayed delete)
+  const showUndoToast = useCallback((message: string, onUndo: () => void) => {
+    const id = Math.random().toString(36).substr(2, 9);
+    setToasts(prev => [...prev, { 
+      id, 
+      message, 
+      type: 'info',
+      action: {
+        label: t('undo'),
+        onClick: onUndo,
+      },
+      duration: 5000, // 5 second undo window
+    }]);
+  }, [t]);
+
+  // Fetch contacts function - can be called with search/filter params
+  const fetchContacts = useCallback(async (params?: { search?: string; dateFrom?: string; dateTo?: string }) => {
+    if (!currentUser) return;
+    
+    setLoadingContacts(true);
+    setContactsError(null);
+    
+    try {
+      const response = await contactService.getAll({
+        search: params?.search,
+        dateFrom: params?.dateFrom,
+        dateTo: params?.dateTo,
+      });
+      setContacts(response.data);
+    } catch (error: any) {
+      console.error('Failed to load contacts:', error);
+      setContactsError(error.message || 'Failed to load contacts');
+    } finally {
+      setLoadingContacts(false);
+    }
+  }, [currentUser]);
+
+  // Initial fetch when user is authenticated and in app view
+  useEffect(() => {
+    if (currentUser && view === 'app') {
+      fetchContacts();
+    }
+  }, [currentUser, view, fetchContacts]);
+
+  // Retry function for loading contacts
+  const retryLoadContacts = useCallback(async () => {
+    if (!currentUser) return;
+    
+    setLoadingContacts(true);
+    setContactsError(null);
+    
+    try {
+      const response = await contactService.getAll();
+      setContacts(response.data);
+      showToast('Contacts loaded successfully', 'success');
+    } catch (error: any) {
+      setContactsError(error.message || 'Failed to load contacts');
+      showToast('Failed to load contacts', 'error');
+    } finally {
+      setLoadingContacts(false);
+    }
+  }, [currentUser, showToast]);
 
   const removeToast = useCallback((id: string) => {
     setToasts(prev => prev.filter(t => t.id !== id));
@@ -75,46 +187,59 @@ function App() {
 
   const uiContextValue = useMemo(() => ({
     showToast,
+    showUndoToast,
     setGlobalLoading
-  }), [showToast, setGlobalLoading]);
+  }), [showToast, showUndoToast, setGlobalLoading]);
   
-  const handleLogin = (email: string) => {
-    setIsGlobalProcessing(true);
-    setTimeout(() => {
-      const foundUser = users.find(u => u.email.toLowerCase() === email.toLowerCase());
-      
-      let userToSet: User;
-      if (foundUser) {
-        userToSet = foundUser;
-      } else {
-        userToSet = {
-          id: `u-${Date.now()}`,
-          fullName: email.split('@')[0],
-          email: email,
-          phone: '',
-          role: email.toLowerCase().includes('admin') ? UserRole.ADMIN : UserRole.USER,
-          joinedAt: new Date(),
-          totalContacts: 0
-        };
-      }
-      
-      setCurrentUser(userToSet);
+  const handleLogin = (apiUser: { id: string; name: string; email: string; phone?: string | null; role: string; createdAt: string }) => {
+    // Clear session message on login attempt
+    setSessionMessage(null);
+    
+    // Map API user to frontend User type
+    const userToSet: User = {
+      id: apiUser.id,
+      name: apiUser.name,
+      email: apiUser.email,
+      phone: apiUser.phone || null,
+      role: apiUser.role === 'admin' ? UserRole.ADMIN : UserRole.USER,
+      avatarUrl: null,
+      createdAt: apiUser.createdAt,
+      updatedAt: apiUser.createdAt,
+      lastLoginAt: new Date().toISOString(),
+      totalContacts: 0, // Will be updated when contacts load
+    };
+    
+    setCurrentUser(userToSet);
+    
+    // Return to previous nav or default to dashboard
+    if (returnToNav) {
+      setActiveNav(returnToNav);
+      setReturnToNav(null);
+    } else {
       setActiveNav('dashboard');
-      setView('app');
-      setIsGlobalProcessing(false);
-      showToast(`${t('loginTitle')}! Welcome back, ${userToSet.fullName}`, "success");
-    }, 800);
+    }
+    
+    setView('app');
+    showToast(`${t('loginTitle')}! Welcome back, ${userToSet.name}`, "success");
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     setIsGlobalProcessing(true);
-    setTimeout(() => {
+    try {
+      await authService.logout();
       setCurrentUser(null);
       setView('landing');
-      setActiveNav('dashboard'); 
-      setIsGlobalProcessing(false);
+      setActiveNav('dashboard');
       showToast("Signed out successfully", "info");
-    }, 500);
+    } catch (err) {
+      // Still logout locally even if API fails
+      authService.clearToken();
+      setCurrentUser(null);
+      setView('landing');
+      showToast("Signed out", "info");
+    } finally {
+      setIsGlobalProcessing(false);
+    }
   };
 
   const addOcrContacts = useCallback((newContacts: Omit<Contact, 'id' | 'createdAt'>[]) => {
@@ -126,6 +251,25 @@ function App() {
       setContacts(prevContacts => [...contactsToAdd, ...prevContacts]);
       showToast(`Successfully added ${newContacts.length} contacts`, "success");
   }, [showToast]);
+
+  // Handle contact created via API - adds to beginning of list
+  const handleContactCreated = useCallback((newContact: Contact) => {
+    setContacts(prevContacts => [newContact, ...prevContacts]);
+  }, []);
+
+  // Handle contact updated via API
+  const handleContactUpdated = useCallback((updatedContact: Contact) => {
+    setContacts(prevContacts => 
+      prevContacts.map(contact => 
+        contact.id === updatedContact.id ? updatedContact : contact
+      )
+    );
+  }, []);
+
+  // Handle contact deleted via API
+  const handleContactDeleted = useCallback((contactId: string) => {
+    setContacts(prevContacts => prevContacts.filter(c => c.id !== contactId));
+  }, []);
 
   const updateContact = useCallback((updatedContact: Contact) => {
     setContacts(prevContacts => 
@@ -157,13 +301,8 @@ function App() {
     showToast(`${ids.length} contacts deleted`, "success");
   }, [showToast]);
 
-  const handleUpdateUsers = useCallback((updater: (prev: User[]) => User[]) => {
-    setUsers(prev => updater(prev));
-  }, []);
-
   const handleUpdateCurrentUser = useCallback((updatedUser: User) => {
     setCurrentUser(updatedUser);
-    setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
     showToast("Profile settings saved", "success");
   }, [showToast]);
 
@@ -180,8 +319,15 @@ function App() {
         if (isAdmin) return <Overview contacts={contacts} t={t} isAdmin={true} />;
         return (
           <Dashboard 
-            contacts={contacts} 
-            addOcrContacts={addOcrContacts} 
+            contacts={contacts}
+            loadingContacts={loadingContacts}
+            contactsError={contactsError}
+            onRetryContacts={retryLoadContacts}
+            onFetchContacts={fetchContacts}
+            addOcrContacts={addOcrContacts}
+            onContactCreated={handleContactCreated}
+            onContactUpdated={handleContactUpdated}
+            onContactDeleted={handleContactDeleted}
             updateContact={updateContact}
             batchUpdateContacts={batchUpdateContacts}
             batchDeleteContacts={batchDeleteContacts}
@@ -199,9 +345,8 @@ function App() {
         if (!isAdmin) return <NotFound t={t} onBack={() => setActiveNav('dashboard')} />;
         return (
           <UserManagement 
-            users={users} 
             t={t} 
-            onUpdateUsers={handleUpdateUsers}
+            currentUser={currentUser}
           />
         );
       
@@ -253,7 +398,7 @@ function App() {
         )}
 
         {view === 'landing' && <LandingPage onLogin={() => setView('login')} onRegister={() => setView('register')} t={t} />}
-        {view === 'login' && <LoginPage onLogin={handleLogin} onRegister={() => setView('register')} onBack={() => setView('landing')} t={t} />}
+        {view === 'login' && <LoginPage onLogin={handleLogin} onRegister={() => setView('register')} onBack={() => setView('landing')} t={t} sessionMessage={sessionMessage} />}
         {view === 'register' && <RegisterPage onLogin={() => setView('login')} onRegister={handleLogin} onBack={() => setView('landing')} t={t} />}
 
         {view === 'app' && currentUser && (

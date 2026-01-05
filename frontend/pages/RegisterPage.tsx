@@ -1,11 +1,10 @@
-
 import React, { useState } from 'react';
 import { LayoutIcon } from '../components/icons';
+import authService, { AuthError } from '../services/authService';
 
 interface RegisterPageProps {
   onLogin: () => void;
-  // Fix: onRegister should accept an email string to match the signature of handleLogin in App.tsx
-  onRegister: (email: string) => void;
+  onRegister: (user: { id: string; name: string; email: string; phone?: string | null; role: string; createdAt: string }) => void;
   onBack: () => void;
   t: (key: string) => string;
 }
@@ -20,27 +19,75 @@ const RegisterPage: React.FC<RegisterPageProps> = ({ onLogin, onRegister, onBack
     confirmPassword: ''
   });
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
     if (error) setError(null);
+    if (fieldErrors[name]) {
+      setFieldErrors(prev => {
+        const updated = { ...prev };
+        delete updated[name];
+        return updated;
+      });
+    }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+    setError(null);
+    setFieldErrors({});
+
+    // Client-side validation
     if (formData.password !== formData.confirmPassword) {
       setError(t('passwordMismatch'));
       return;
     }
 
+    if (formData.password.length < 8) {
+      setFieldErrors({ password: 'Password must be at least 8 characters' });
+      return;
+    }
+
     setLoading(true);
-    setTimeout(() => {
-      // Fix: Call onRegister with the email provided in the form to ensure type compatibility
-      onRegister(formData.email);
+    try {
+      const { user } = await authService.register(
+        formData.fullName,
+        formData.email,
+        formData.password,
+        formData.phone || undefined
+      );
+      // Map snake_case API response to camelCase for App.tsx
+      onRegister({
+        id: String(user.id),
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        createdAt: user.created_at,
+      });
+    } catch (err: unknown) {
+      const authError = err as AuthError;
+      if (authError.errors) {
+        // Convert array errors to single string per field
+        const mapped: Record<string, string> = {};
+        for (const [field, messages] of Object.entries(authError.errors)) {
+          mapped[field] = messages[0];
+        }
+        setFieldErrors(mapped);
+      } else {
+        setError(authError.message || 'Registration failed');
+      }
+    } finally {
       setLoading(false);
-    }, 1000);
+    }
+  };
+
+  const getInputClassName = (fieldName: string) => {
+    const baseClass = "w-full bg-gray-50 dark:bg-gray-800 border rounded-2xl px-4 py-3.5 text-sm font-semibold text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all";
+    const hasError = fieldErrors[fieldName];
+    return `${baseClass} ${hasError ? 'border-red-500 dark:border-red-500' : 'border-gray-200 dark:border-gray-700'}`;
   };
 
   return (
@@ -76,9 +123,12 @@ const RegisterPage: React.FC<RegisterPageProps> = ({ onLogin, onRegister, onBack
                 required 
                 value={formData.fullName}
                 onChange={handleInputChange}
-                className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl px-4 py-3.5 text-sm font-semibold text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all"
+                className={getInputClassName('fullName')}
                 placeholder="John Doe"
               />
+              {(fieldErrors.name || fieldErrors.fullName) && (
+                <p className="mt-1 text-xs font-bold text-red-500">{fieldErrors.name || fieldErrors.fullName}</p>
+              )}
             </div>
             
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -90,21 +140,26 @@ const RegisterPage: React.FC<RegisterPageProps> = ({ onLogin, onRegister, onBack
                   required 
                   value={formData.email}
                   onChange={handleInputChange}
-                  className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl px-4 py-3.5 text-sm font-semibold text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all"
+                  className={getInputClassName('email')}
                   placeholder="name@company.com"
                 />
+                {fieldErrors.email && (
+                  <p className="mt-1 text-xs font-bold text-red-500">{fieldErrors.email}</p>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-2">{t('phoneNumberLabel')}</label>
                 <input 
                   name="phone"
                   type="tel" 
-                  required 
                   value={formData.phone}
                   onChange={handleInputChange}
-                  className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl px-4 py-3.5 text-sm font-semibold text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all"
+                  className={getInputClassName('phone')}
                   placeholder="+62..."
                 />
+                {fieldErrors.phone && (
+                  <p className="mt-1 text-xs font-bold text-red-500">{fieldErrors.phone}</p>
+                )}
               </div>
             </div>
 
@@ -117,9 +172,12 @@ const RegisterPage: React.FC<RegisterPageProps> = ({ onLogin, onRegister, onBack
                   required 
                   value={formData.password}
                   onChange={handleInputChange}
-                  className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl px-4 py-3.5 text-sm font-semibold text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all"
+                  className={getInputClassName('password')}
                   placeholder="••••••••"
                 />
+                {fieldErrors.password && (
+                  <p className="mt-1 text-xs font-bold text-red-500">{fieldErrors.password}</p>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-2">{t('confirmPasswordLabel')}</label>
@@ -129,7 +187,7 @@ const RegisterPage: React.FC<RegisterPageProps> = ({ onLogin, onRegister, onBack
                   required 
                   value={formData.confirmPassword}
                   onChange={handleInputChange}
-                  className="w-full bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl px-4 py-3.5 text-sm font-semibold text-gray-900 dark:text-white focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition-all"
+                  className={getInputClassName('confirmPassword')}
                   placeholder="••••••••"
                 />
               </div>

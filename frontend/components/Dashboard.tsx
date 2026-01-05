@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo, useEffect, useCallback, memo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, memo, useRef } from 'react';
 import FilterBar, { DateFilter } from './FilterBar';
 import ContactsTable from './ContactsTable';
 import { Contact, ConsentStatus, Source } from '../types';
@@ -10,10 +10,18 @@ import BulkEditModal from './BulkEditModal';
 import { NavItem } from './Sidebar';
 import { useAppUI } from '../App';
 import { CopyIcon, EditIcon } from './icons';
+import { contactService } from '../services/contactService';
 
 interface DashboardProps {
   contacts: Contact[];
+  loadingContacts?: boolean;
+  contactsError?: string | null;
+  onRetryContacts?: () => void;
+  onFetchContacts?: (params?: { search?: string; dateFrom?: string; dateTo?: string }) => void;
   addOcrContacts: (newContacts: Omit<Contact, 'id' | 'createdAt'>[]) => void;
+  onContactCreated?: (contact: Contact) => void;
+  onContactUpdated?: (contact: Contact) => void;
+  onContactDeleted?: (contactId: string) => void;
   updateContact: (updatedContact: Contact) => void;
   batchUpdateContacts: (ids: string[], updates: Partial<Contact>) => void;
   batchDeleteContacts: (ids: string[]) => void;
@@ -24,9 +32,26 @@ interface DashboardProps {
 
 export type ContactSortKey = keyof Contact;
 
+// Pending delete state structure
+interface PendingDelete {
+  id: number;
+  contacts: Contact[];
+  timeoutId: ReturnType<typeof setTimeout>;
+}
+
+// Counter for unique pending delete IDs
+let pendingDeleteIdCounter = 0;
+
 const Dashboard: React.FC<DashboardProps> = ({ 
   contacts, 
-  addOcrContacts, 
+  loadingContacts = false,
+  contactsError = null,
+  onRetryContacts,
+  onFetchContacts,
+  addOcrContacts,
+  onContactCreated,
+  onContactUpdated,
+  onContactDeleted,
   updateContact, 
   batchUpdateContacts, 
   batchDeleteContacts, 
@@ -34,16 +59,20 @@ const Dashboard: React.FC<DashboardProps> = ({
   setActiveNav,
   onMergeContact
 }) => {
-  const { showToast, setGlobalLoading } = useAppUI();
+  const { showToast, showUndoToast, setGlobalLoading } = useAppUI();
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isBulkEditModalOpen, setIsBulkEditModalOpen] = useState(false);
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [loadingLocal, setLoadingLocal] = useState(false);
   
   // Selection State
   const [isBulkMode, setIsBulkMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  
+  // Bulk Delete State
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [loadingDelete, setLoadingDelete] = useState(false);
   
   // Filtering State
   const [searchQuery, setSearchQuery] = useState('');
@@ -62,13 +91,96 @@ const Dashboard: React.FC<DashboardProps> = ({
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
 
+  // Pending Deletes State (for undo functionality)
+  const [pendingDeletes, setPendingDeletes] = useState<Map<number, PendingDelete>>(new Map());
+  const pendingDeletesRef = useRef(pendingDeletes);
+  pendingDeletesRef.current = pendingDeletes;
+
+  // Cleanup pending deletes on unmount
+  useEffect(() => {
+    return () => {
+      pendingDeletesRef.current.forEach(pending => {
+        clearTimeout(pending.timeoutId);
+      });
+    };
+  }, []);
+
+  // Handle page unload with pending deletes
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (pendingDeletesRef.current.size > 0) {
+        e.preventDefault();
+        e.returnValue = t('pendingDeletesWarning');
+        return e.returnValue;
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [t]);
+
   // Performance: Debounce search input
   useEffect(() => {
     const handler = setTimeout(() => {
       setDebouncedSearchQuery(searchQuery);
-    }, 250);
+    }, 200); // 200ms debounce per FR32
     return () => clearTimeout(handler);
   }, [searchQuery]);
+
+  /**
+   * Convert UI preset date filter to API date_from/date_to parameters (Story 5.4)
+   */
+  const convertDateFilter = (filter: DateFilter): { dateFrom?: string; dateTo?: string } => {
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0]; // "2026-01-05"
+    
+    switch (filter) {
+      case 'today':
+        return { dateFrom: todayStr, dateTo: todayStr };
+        
+      case '7days': {
+        const sevenDaysAgo = new Date(today);
+        sevenDaysAgo.setDate(today.getDate() - 7); // 7 days back (consistent)
+        return { 
+          dateFrom: sevenDaysAgo.toISOString().split('T')[0], 
+          dateTo: todayStr 
+        };
+      }
+      
+      case '30days': {
+        const thirtyDaysAgo = new Date(today);
+        thirtyDaysAgo.setDate(today.getDate() - 30); // 30 days back (consistent)
+        return { 
+          dateFrom: thirtyDaysAgo.toISOString().split('T')[0], 
+          dateTo: todayStr 
+        };
+      }
+      
+      case 'thisMonth': {
+        const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+        return { 
+          dateFrom: firstOfMonth.toISOString().split('T')[0], 
+          dateTo: todayStr 
+        };
+      }
+      
+      case 'all':
+      default:
+        return {}; // No date filter
+    }
+  };
+
+  // Fetch contacts from API when search or date filter changes (Story 5.3, 5.4)
+  useEffect(() => {
+    if (onFetchContacts) {
+      const dateParams = convertDateFilter(activeDateFilter);
+      onFetchContacts({ 
+        search: debouncedSearchQuery || undefined,
+        dateFrom: dateParams.dateFrom,
+        dateTo: dateParams.dateTo,
+      });
+    }
+  }, [debouncedSearchQuery, activeDateFilter, onFetchContacts]);
 
   const handleSort = (key: ContactSortKey) => {
     let direction: 'asc' | 'desc' | null = 'asc';
@@ -163,14 +275,108 @@ const Dashboard: React.FC<DashboardProps> = ({
     return filteredContacts.slice(startIndex, startIndex + itemsPerPage);
   }, [filteredContacts, currentPage]);
 
-  const handleUpdateContact = useCallback((updatedContact: Contact) => {
-    setGlobalLoading(true);
-    setTimeout(() => {
-      updateContact(updatedContact);
-      setSelectedContact(updatedContact);
-      setGlobalLoading(false);
-    }, 500);
-  }, [updateContact, setGlobalLoading]);
+  // Handle contact updated via API
+  const handleContactUpdated = useCallback((updatedContact: Contact) => {
+    onContactUpdated?.(updatedContact);
+    setSelectedContact(updatedContact); // Update the modal's view with fresh data
+  }, [onContactUpdated]);
+
+  // Handle contact deleted via API (immediate delete - for ContactDetailModal)
+  const handleContactDeleted = useCallback((contactId: string) => {
+    onContactDeleted?.(contactId);
+    setSelectedContact(null); // Close the modal
+  }, [onContactDeleted]);
+
+  /**
+   * Delete contacts with undo capability.
+   * Removes from UI immediately (optimistic), delays API call by 5 seconds.
+   * If user clicks Undo within 5 seconds, contacts are restored without API call.
+   */
+  const handleDeleteWithUndo = useCallback((contactsToDelete: Contact[]) => {
+    const ids = contactsToDelete.map(c => c.id);
+    const pendingId = ++pendingDeleteIdCounter;
+
+    // 1. Remove from UI immediately (optimistic update)
+    ids.forEach(id => onContactDeleted?.(id));
+
+    // 2. Start 5-second timer for actual deletion
+    const timeoutId = setTimeout(async () => {
+      try {
+        // Execute actual API delete
+        if (contactsToDelete.length === 1) {
+          await contactService.delete(contactsToDelete[0].id);
+        } else {
+          await contactService.deleteBatch(ids);
+        }
+        
+        // Remove from pending (delete was successful)
+        setPendingDeletes(prev => {
+          const next = new Map(prev);
+          next.delete(pendingId);
+          return next;
+        });
+        
+      } catch (error: any) {
+        // On error: restore contacts to UI
+        contactsToDelete.forEach(contact => {
+          onContactCreated?.(contact);
+        });
+        showToast(error.message || t('deleteFailed'), 'error');
+        
+        // Remove from pending
+        setPendingDeletes(prev => {
+          const next = new Map(prev);
+          next.delete(pendingId);
+          return next;
+        });
+      }
+    }, 5000);
+
+    // 3. Store pending delete
+    setPendingDeletes(prev => {
+      const next = new Map(prev);
+      next.set(pendingId, {
+        id: pendingId,
+        contacts: contactsToDelete,
+        timeoutId,
+      });
+      return next;
+    });
+
+    // 4. Show toast with undo action
+    const message = contactsToDelete.length === 1
+      ? t('contactDeleted')
+      : (t('contactsDeleted') || '{count} contacts deleted').replace('{count}', String(contactsToDelete.length));
+    
+    showUndoToast(message, () => handleUndo(pendingId));
+  }, [onContactDeleted, onContactCreated, t, showToast, showUndoToast]);
+
+  /**
+   * Undo a pending delete.
+   * Cancels the timer and restores contacts to UI.
+   */
+  const handleUndo = useCallback((pendingId: number) => {
+    const pending = pendingDeletesRef.current.get(pendingId);
+    if (!pending) return;
+
+    // 1. Cancel the timer
+    clearTimeout(pending.timeoutId);
+
+    // 2. Restore contacts to UI
+    pending.contacts.forEach(contact => {
+      onContactCreated?.(contact);
+    });
+
+    // 3. Remove from pending
+    setPendingDeletes(prev => {
+      const next = new Map(prev);
+      next.delete(pendingId);
+      return next;
+    });
+
+    // 4. Show confirmation
+    showToast(t('deletionCancelled'), 'success');
+  }, [onContactCreated, t, showToast]);
 
   // Selection Handlers
   const handleToggleSelect = useCallback((id: string) => {
@@ -192,25 +398,45 @@ const Dashboard: React.FC<DashboardProps> = ({
     }
   }, [paginatedContacts, selectedIds, isBulkMode]);
 
-  // Bulk Action Handlers
-  const handleBulkStatusChange = (status: ConsentStatus) => {
+  // Bulk Action Handlers - Now uses API for persistence
+  const handleBulkStatusChange = async (status: ConsentStatus) => {
     setGlobalLoading(true);
-    setTimeout(() => {
-      batchUpdateContacts(selectedIds, { consent: status });
+    try {
+      const updatedContacts = await contactService.updateBatch(selectedIds, { consent: status });
+      // Update each contact in local state
+      updatedContacts.forEach(contact => {
+        onContactUpdated?.(contact);
+      });
       setSelectedIds([]);
+      const message = (t('contactsUpdated') || '{count} contacts updated')
+        .replace('{count}', String(updatedContacts.length));
+      showToast(message, 'success');
+    } catch (error: any) {
+      showToast(error.message || t('bulkUpdateFailed') || 'Failed to update contacts', 'error');
+    } finally {
       setGlobalLoading(false);
-    }, 800);
+    }
   };
 
-  const handleBulkDelete = () => {
-    if (confirm(`Are you sure you want to delete ${selectedIds.length} contacts?`)) {
-      setGlobalLoading(true);
-      setTimeout(() => {
-        batchDeleteContacts(selectedIds);
-        setSelectedIds([]);
-        setGlobalLoading(false);
-      }, 1000);
-    }
+  const handleBulkDeleteClick = () => {
+    setShowDeleteConfirm(true);
+  };
+
+  const handleBulkDeleteConfirm = () => {
+    // Get the contacts to delete from the current contacts list
+    const contactsToDelete = contacts.filter(c => selectedIds.includes(c.id));
+    
+    // Use delayed delete with undo capability
+    handleDeleteWithUndo(contactsToDelete);
+    
+    // Clear selection and close dialog immediately
+    setSelectedIds([]);
+    setShowDeleteConfirm(false);
+  };
+
+  const handleBulkDeleteCancel = () => {
+    setShowDeleteConfirm(false);
+    // Keep selection preserved
   };
 
   const handleCopyEmails = () => {
@@ -273,7 +499,7 @@ const Dashboard: React.FC<DashboardProps> = ({
       />
       
       <div className="bg-white dark:bg-gray-900 rounded-[2.5rem] shadow-sm border border-gray-100 dark:border-gray-800 overflow-hidden relative">
-        {isLoading ? (
+        {loadingContacts || loadingLocal ? (
           <div className="p-8 space-y-4">
             {[...Array(8)].map((_, i) => (
               <div key={i} className="flex items-center gap-6 py-4 animate-pulse border-b border-gray-50 dark:border-gray-800 last:border-0">
@@ -282,6 +508,23 @@ const Dashboard: React.FC<DashboardProps> = ({
                 <div className="h-4 bg-gray-100 dark:bg-gray-800 rounded w-1/6 ml-auto"></div>
               </div>
             ))}
+          </div>
+        ) : contactsError ? (
+          <div className="flex flex-col items-center justify-center py-20 px-8">
+            <div className="w-16 h-16 bg-red-100 dark:bg-red-900/20 rounded-full flex items-center justify-center mb-4">
+              <svg className="w-8 h-8 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <p className="text-red-500 font-medium mb-4 text-center">{contactsError}</p>
+            {onRetryContacts && (
+              <button 
+                onClick={onRetryContacts}
+                className="px-6 py-3 bg-primary-600 text-white font-bold rounded-xl hover:bg-primary-700 active:scale-95 transition-all shadow-lg shadow-primary-500/20"
+              >
+                {t('retry') || 'Retry'}
+              </button>
+            )}
           </div>
         ) : (
           <ContactsTable 
@@ -298,7 +541,7 @@ const Dashboard: React.FC<DashboardProps> = ({
         )}
       </div>
 
-      {!isLoading && filteredContacts.length > 0 && (
+      {!loadingLocal && filteredContacts.length > 0 && (
         <div className="flex flex-col md:flex-row items-center justify-between py-8 px-4 sm:px-0 gap-6">
           <div className="order-2 md:order-1">
             <p className="text-sm font-medium text-gray-500">
@@ -414,7 +657,7 @@ const Dashboard: React.FC<DashboardProps> = ({
               <div className="h-8 w-px bg-gray-200 dark:bg-white/10 mx-1 hidden lg:block"></div>
 
               <button 
-                onClick={handleBulkDelete}
+                onClick={handleBulkDeleteClick}
                 className="bg-red-500 hover:bg-red-600 text-white font-black text-xs uppercase tracking-widest px-6 py-3 rounded-xl shadow-lg shadow-red-500/20 transition-all active:scale-95"
               >
                 Delete
@@ -429,6 +672,7 @@ const Dashboard: React.FC<DashboardProps> = ({
             isOpen={isAddModalOpen}
             onClose={() => setIsAddModalOpen(false)}
             onSave={addOcrContacts}
+            onContactCreated={onContactCreated}
             t={t}
             onGoToApi={() => {
               setIsAddModalOpen(false);
@@ -444,6 +688,7 @@ const Dashboard: React.FC<DashboardProps> = ({
           onClose={() => setIsExportModalOpen(false)}
           filteredContacts={filteredContacts}
           allContacts={contacts}
+          selectedContacts={contacts.filter(c => selectedIds.includes(c.id))}
           t={t}
         />
       )}
@@ -451,25 +696,79 @@ const Dashboard: React.FC<DashboardProps> = ({
         <BulkEditModal 
           isOpen={isBulkEditModalOpen}
           onClose={() => setIsBulkEditModalOpen(false)}
-          onSave={(updates) => {
-            setGlobalLoading(true);
-            setTimeout(() => {
-              batchUpdateContacts(selectedIds, updates);
-              setSelectedIds([]);
-              setGlobalLoading(false);
-            }, 800);
+          selectedIds={selectedIds}
+          onContactsUpdated={(updatedContacts) => {
+            // Merge updated contacts into state
+            updatedContacts.forEach(contact => {
+              onContactUpdated?.(contact);
+            });
+            setSelectedIds([]); // Clear selection on success
           }}
-          selectedCount={selectedIds.length}
+          showToast={showToast}
           t={t}
         />
       )}
       <ContactDetailModal
         isOpen={!!selectedContact}
         onClose={() => setSelectedContact(null)}
-        onSave={handleUpdateContact}
+        onContactUpdated={handleContactUpdated}
+        onContactDeleted={handleContactDeleted}
+        onDeleteWithUndo={handleDeleteWithUndo}
         contact={selectedContact}
         t={t}
       />
+
+      {/* Bulk Delete Confirmation Dialog */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div 
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm transition-opacity" 
+            onClick={loadingDelete ? undefined : handleBulkDeleteCancel}
+          />
+          <div className="relative w-full max-w-md bg-white dark:bg-gray-900 rounded-[2rem] shadow-2xl border border-gray-100 dark:border-gray-800 overflow-hidden transform transition-all animate-in zoom-in-95 duration-200">
+            <div className="p-8">
+              <div className="w-16 h-16 mx-auto mb-6 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
+                <svg className="w-8 h-8 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </div>
+              <h3 className="text-2xl font-black text-center text-gray-900 dark:text-white mb-2">
+                {t('confirmBulkDelete') || 'Delete Contacts?'}
+              </h3>
+              <p className="text-center text-gray-600 dark:text-gray-400 mb-8">
+                {(t('bulkDeleteConfirmation') || 'Are you sure you want to delete {count} contacts? This action cannot be undone.')
+                  .replace('{count}', String(selectedIds.length))}
+              </p>
+              <div className="flex gap-3">
+                <button 
+                  onClick={handleBulkDeleteCancel}
+                  disabled={loadingDelete}
+                  className="flex-1 px-6 py-4 rounded-2xl font-black text-xs uppercase tracking-widest text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all border border-gray-200 dark:border-gray-700 disabled:opacity-50"
+                >
+                  {t('cancel')}
+                </button>
+                <button 
+                  onClick={handleBulkDeleteConfirm}
+                  disabled={loadingDelete}
+                  className="flex-1 px-6 py-4 rounded-2xl font-black text-xs uppercase tracking-widest text-white bg-red-500 hover:bg-red-600 disabled:opacity-50 transition-all shadow-xl shadow-red-500/20 flex items-center justify-center gap-2"
+                >
+                  {loadingDelete ? (
+                    <>
+                      <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      {t('deleting') || 'Deleting...'}
+                    </>
+                  ) : (
+                    t('delete') || 'Delete'
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

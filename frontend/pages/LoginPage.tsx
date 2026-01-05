@@ -1,15 +1,17 @@
 
 import React, { useState } from 'react';
 import { LayoutIcon, SpinnerIcon } from '../components/icons';
+import authService from '../services/authService';
 
 interface LoginPageProps {
-  onLogin: (email: string) => void;
+  onLogin: (user: { id: string; name: string; email: string; phone?: string | null; role: string; createdAt: string }) => void;
   onRegister: () => void;
   onBack: () => void;
   t: (key: string) => string;
+  sessionMessage?: string | null;
 }
 
-const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onRegister, onBack, t }) => {
+const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onRegister, onBack, t, sessionMessage }) => {
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -24,23 +26,43 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onRegister, onBack, t })
     }
     if (!password) {
       newErrors.password = "Password is required";
-    } else if (password.length < 6) {
-      newErrors.password = "Password must be at least 6 characters";
+    } else if (password.length < 8) {
+      newErrors.password = "Password must be at least 8 characters";
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validate()) return;
 
     setLoading(true);
-    // Simulate API call
-    setTimeout(() => {
-      onLogin(email);
+    setErrors({});
+    
+    try {
+      const { user } = await authService.login(email, password);
+      // Map snake_case API response to camelCase for App.tsx
+      onLogin({
+        id: String(user.id),
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        createdAt: user.created_at,
+      });
+    } catch (err: any) {
+      if (err.status === 401 || err.status === 422) {
+        setErrors({ 
+          email: 'Invalid email or password',
+          password: ' ' // Show error state on password too
+        });
+      } else {
+        setErrors({ email: err.message || 'Login failed' });
+      }
+    } finally {
       setLoading(false);
-    }, 1200);
+    }
   };
 
   return (
@@ -56,6 +78,18 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onRegister, onBack, t })
           <h1 className="text-2xl font-black text-gray-900 dark:text-white tracking-tight">{t('appName')}</h1>
         </button>
         <div className="bg-white dark:bg-gray-900 py-10 px-8 sm:px-12 rounded-[2.5rem] border border-gray-100 dark:border-gray-800 shadow-2xl animate-in fade-in zoom-in-95 duration-500">
+          {/* Session expired message */}
+          {sessionMessage && (
+            <div className="mb-6 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl animate-in fade-in slide-in-from-top-2">
+              <p className="text-sm font-semibold text-amber-700 dark:text-amber-400 flex items-center gap-2">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                {sessionMessage}
+              </p>
+            </div>
+          )}
+
           <div className="mb-8">
             <h2 className="text-3xl font-black text-gray-900 dark:text-white tracking-tight">{t('loginTitle')}</h2>
             <p className="mt-2 text-sm text-gray-500 font-medium">{t('loginSub')}</p>

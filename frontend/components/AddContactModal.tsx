@@ -1,17 +1,20 @@
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
+import * as XLSX from 'xlsx';
 import { processAttendanceList } from '../services/geminiService';
+import { contactService, BatchCreateResult } from '../services/contactService';
 import { Contact, OcrResultRow, Source, ConsentStatus } from '../types';
 import { useAppUI } from '../App';
 import { 
   UploadIcon, SpinnerIcon, ManualIcon, DatabaseIcon, 
-  CodeIcon, CopyIcon, DownloadIcon 
+  CodeIcon, CopyIcon, DownloadIcon, TrashIcon 
 } from './icons';
 
 interface AddContactModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSave: (newContacts: Omit<Contact, 'id' | 'createdAt'>[]) => void;
+  onContactCreated?: (contact: Contact) => void;
   t: (key: string) => string;
   onGoToApi?: () => void;
   existingContacts: Contact[];
@@ -19,7 +22,7 @@ interface AddContactModalProps {
 }
 
 type AddTab = 'manual' | 'ocr' | 'import' | 'webform';
-type WizardStep = 'upload' | 'processing' | 'review' | 'duplicates';
+type WizardStep = 'upload' | 'processing' | 'review' | 'duplicates' | 'results';
 
 interface Conflict {
   newContact: Omit<Contact, 'id' | 'createdAt'>;
@@ -27,22 +30,302 @@ interface Conflict {
   index: number;
 }
 
+interface ParsedContact {
+  fullName: string;
+  phone: string;
+  email: string;
+  company: string;
+  jobTitle?: string;
+}
+
+// Column mapping for CSV headers
+const HEADER_MAPPINGS: Record<string, string[]> = {
+  fullName: ['name', 'full_name', 'fullname', 'nama', 'contact', 'contact_name', 'nama lengkap'],
+  phone: ['phone', 'phone_number', 'telephone', 'tel', 'mobile', 'hp', 'nomor', 'no_hp', 'no hp', 'handphone', 'telepon'],
+  email: ['email', 'e-mail', 'mail', 'email_address'],
+  company: ['company', 'organization', 'org', 'perusahaan', 'company_name', 'organisasi'],
+  jobTitle: ['job_title', 'jobtitle', 'title', 'position', 'jabatan', 'role'],
+};
+
+const findHeaderMapping = (header: string): string | null => {
+  const normalized = header.toLowerCase().trim();
+  for (const [field, variations] of Object.entries(HEADER_MAPPINGS)) {
+    if (variations.includes(normalized)) {
+      return field;
+    }
+  }
+  return null;
+};
+
+// Simple CSV parser that handles quoted values and different delimiters
+const parseCSV = (text: string): string[][] => {
+  const lines = text.split(/\r?\n/).filter(line => line.trim());
+  if (lines.length === 0) return [];
+  
+  // Auto-detect delimiter (comma, semicolon, or tab)
+  const firstLine = lines[0];
+  const commaCount = (firstLine.match(/,/g) || []).length;
+  const semicolonCount = (firstLine.match(/;/g) || []).length;
+  const tabCount = (firstLine.match(/\t/g) || []).length;
+  
+  let delimiter = ',';
+  if (semicolonCount > commaCount && semicolonCount >= tabCount) delimiter = ';';
+  else if (tabCount > commaCount && tabCount >= semicolonCount) delimiter = '\t';
+  
+  return lines.map(line => {
+    const values: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      
+      if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === delimiter && !inQuotes) {
+        values.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    values.push(current.trim());
+    return values;
+  });
+};
+
+const parseCSVFile = (file: File): Promise<ParsedContact[]> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    
+    reader.onload = (e) => {
+      try {
+        const text = e.target?.result as string;
+        const rows = parseCSV(text);
+        
+        if (rows.length < 2) {
+          reject(new Error('CSV file contains no data rows'));
+          return;
+        }
+        
+        // First row is headers
+        const headers = rows[0];
+        const dataRows = rows.slice(1);
+        
+        // Map headers to fields
+        const fieldMap: Record<number, string> = {};
+        headers.forEach((header, idx) => {
+          const mapping = findHeaderMapping(header);
+          if (mapping) {
+            fieldMap[idx] = mapping;
+          }
+        });
+        
+        // Validate required columns
+        const hasName = Object.values(fieldMap).includes('fullName');
+        const hasPhone = Object.values(fieldMap).includes('phone');
+        
+        if (!hasName) {
+          reject(new Error('CSV must have a name column (Name, Full Name, Nama)'));
+          return;
+        }
+        if (!hasPhone) {
+          reject(new Error('CSV must have a phone column (Phone, Phone Number, HP)'));
+          return;
+        }
+        
+        // Transform data rows
+        const contacts: ParsedContact[] = dataRows
+          .map(row => {
+            const contact: ParsedContact = {
+              fullName: '',
+              phone: '',
+              email: '',
+              company: '',
+            };
+            
+            row.forEach((value, idx) => {
+              const field = fieldMap[idx];
+              if (field && value) {
+                (contact as any)[field] = value.trim();
+              }
+            });
+            
+            return contact;
+          })
+          .filter(c => c.fullName && c.phone); // Filter out empty rows
+        
+        if (contacts.length === 0) {
+          reject(new Error('No valid contacts found in CSV'));
+          return;
+        }
+        
+        resolve(contacts);
+      } catch (err: any) {
+        reject(new Error(`Failed to parse CSV: ${err.message}`));
+      }
+    };
+    
+    reader.onerror = () => {
+      reject(new Error('Failed to read file'));
+    };
+    
+    reader.readAsText(file);
+  });
+};
+
+const downloadCSVTemplate = () => {
+  const headers = ['Name', 'Phone', 'Email', 'Company', 'Job Title'];
+  const example1 = ['John Doe', '+6281234567890', 'john@example.com', 'PT Example', 'Manager'];
+  const example2 = ['Jane Smith', '+6289876543210', 'jane@company.com', 'CV Tech', 'Director'];
+  
+  const csvContent = [
+    headers.join(','),
+    example1.join(','),
+    example2.join(','),
+  ].join('\n');
+  
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'contacts_template.csv';
+  link.click();
+  
+  URL.revokeObjectURL(url);
+};
+
+// XLSX parser using xlsx library
+const parseXLSXFile = (file: File): Promise<ParsedContact[]> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
+        
+        // Get first sheet
+        const firstSheetName = workbook.SheetNames[0];
+        if (!firstSheetName) {
+          reject(new Error('XLSX file has no sheets'));
+          return;
+        }
+        
+        const worksheet = workbook.Sheets[firstSheetName];
+        
+        // Check if sheet has data
+        if (!worksheet['!ref']) {
+          reject(new Error('XLSX sheet is empty'));
+          return;
+        }
+        
+        // Convert to JSON - first row becomes keys automatically
+        const jsonData = XLSX.utils.sheet_to_json<Record<string, any>>(worksheet, {
+          raw: false,  // Get formatted values, not raw
+          defval: '',  // Default empty string for missing cells
+        });
+        
+        if (jsonData.length === 0) {
+          reject(new Error('XLSX file contains no data rows'));
+          return;
+        }
+        
+        // Map headers to fields using same logic as CSV
+        const contacts: ParsedContact[] = jsonData
+          .map(row => {
+            const contact: ParsedContact = {
+              fullName: '',
+              phone: '',
+              email: '',
+              company: '',
+            };
+            
+            // Iterate through row keys and map them to our fields
+            for (const [key, value] of Object.entries(row)) {
+              const mapping = findHeaderMapping(key);
+              if (mapping && value) {
+                (contact as any)[mapping] = String(value).trim();
+              }
+            }
+            
+            return contact;
+          })
+          .filter(c => c.fullName && c.phone); // Filter out empty rows
+        
+        if (contacts.length === 0) {
+          reject(new Error('No valid contacts found in XLSX (requires Name and Phone columns)'));
+          return;
+        }
+        
+        resolve(contacts);
+      } catch (err: any) {
+        // Handle specific xlsx errors
+        if (err.message?.includes('password')) {
+          reject(new Error('XLSX file is password protected'));
+        } else if (err.message?.includes('Unsupported')) {
+          reject(new Error('XLSX file format not supported'));
+        } else {
+          reject(new Error(`Failed to parse XLSX: ${err.message}`));
+        }
+      }
+    };
+    
+    reader.onerror = () => {
+      reject(new Error('Failed to read file'));
+    };
+    
+    reader.readAsArrayBuffer(file);
+  });
+};
+
+// Download XLSX template using xlsx library
+const downloadXLSXTemplate = () => {
+  const headers = ['Name', 'Phone', 'Email', 'Company', 'Job Title'];
+  const example1 = ['John Doe', '+6281234567890', 'john@example.com', 'PT Example', 'Manager'];
+  const example2 = ['Jane Smith', '+6289876543210', 'jane@company.com', 'CV Tech', 'Director'];
+  
+  // Create worksheet from array of arrays
+  const worksheet = XLSX.utils.aoa_to_sheet([headers, example1, example2]);
+  
+  // Create workbook and add worksheet
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Contacts');
+  
+  // Write file and trigger download
+  XLSX.writeFile(workbook, 'contacts_template.xlsx');
+};
+
 const AddContactModal: React.FC<AddContactModalProps> = ({ 
-  isOpen, onClose, onSave, t, onGoToApi, existingContacts, onMergeContact 
+  isOpen, onClose, onSave, onContactCreated, t, onGoToApi, existingContacts, onMergeContact 
 }) => {
   const { showToast } = useAppUI();
   const [activeTab, setActiveTab] = useState<AddTab>('manual');
   const [isDragging, setIsDragging] = useState(false);
+  const [loadingCreate, setLoadingCreate] = useState(false);
+  const [loadingSave, setLoadingSave] = useState(false);
   
   const [ocrStep, setOcrStep] = useState<WizardStep>('upload');
   const [ocrData, setOcrData] = useState<OcrResultRow[]>([]);
+  const [ocrOriginalData, setOcrOriginalData] = useState<OcrResultRow[]>([]); // Track original values for edit detection
   const [ocrError, setOcrError] = useState<string | null>(null);
   const [ocrImagePreview, setOcrImagePreview] = useState<string | null>(null);
   const [showImageComparison, setShowImageComparison] = useState(false);
+  const [ocrValidationErrors, setOcrValidationErrors] = useState<Record<number, string[]>>({});
 
   // Duplicate Resolution State
   const [conflicts, setConflicts] = useState<Conflict[]>([]);
   const [safeContacts, setSafeContacts] = useState<Omit<Contact, 'id' | 'createdAt'>[]>([]);
+  
+  // Import Results State (for FR22 summary display)
+  const [batchResult, setBatchResult] = useState<BatchCreateResult | null>(null);
+  const [duplicatesResolved, setDuplicatesResolved] = useState<number>(0);
 
   const [manualData, setManualData] = useState<Omit<Contact, 'id' | 'createdAt'>>({
     fullName: '',
@@ -77,6 +360,9 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
     setFormErrors({});
     setConflicts([]);
     setSafeContacts([]);
+    setBatchResult(null);
+    setDuplicatesResolved(0);
+    setLoadingCreate(false);
     setManualData({
       fullName: '',
       phone: '',
@@ -135,40 +421,81 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
     }
   };
 
-  const resolveConflict = (idx: number, action: 'skip' | 'add' | 'merge') => {
+  const resolveConflict = async (idx: number, action: 'skip' | 'add' | 'merge') => {
     const conflict = conflicts[idx];
     
     if (action === 'add') {
-      setSafeContacts(prev => [...prev, conflict.newContact]);
+      // Call API to add the contact anyway (force create)
+      try {
+        const newContact = await contactService.create({
+          fullName: conflict.newContact.fullName,
+          phone: conflict.newContact.phone,
+          email: conflict.newContact.email || undefined,
+          company: conflict.newContact.company || undefined,
+          jobTitle: conflict.newContact.jobTitle || undefined,
+          source: conflict.newContact.source,
+          consent: conflict.newContact.consent,
+        });
+        if (onContactCreated) onContactCreated(newContact);
+        setDuplicatesResolved(prev => prev + 1);
+      } catch (error: any) {
+        showToast(error.message || 'Failed to add contact', 'error');
+      }
     } else if (action === 'merge' && onMergeContact) {
       const updates: Partial<Contact> = {};
       if (!conflict.existingContact.company && conflict.newContact.company) updates.company = conflict.newContact.company;
       if (!conflict.existingContact.jobTitle && conflict.newContact.jobTitle) updates.jobTitle = conflict.newContact.jobTitle;
       if (!conflict.existingContact.email && conflict.newContact.email) updates.email = conflict.newContact.email;
-      onMergeContact(conflict.existingContact.id, updates);
+      if (Object.keys(updates).length > 0) {
+        onMergeContact(conflict.existingContact.id, updates);
+      }
+      setDuplicatesResolved(prev => prev + 1);
+    } else {
+      // Skip - just increment resolved count
+      setDuplicatesResolved(prev => prev + 1);
     }
 
     const remaining = conflicts.filter((_, i) => i !== idx);
     setConflicts(remaining);
 
     if (remaining.length === 0) {
-      const finalToSave = action === 'add' ? [...safeContacts, conflict.newContact] : safeContacts;
-      if (finalToSave.length > 0) onSave(finalToSave);
-      handleClose();
+      // All duplicates resolved, show results summary
+      setOcrStep('results');
     }
   };
 
-  const resolveAll = (action: 'skip' | 'add') => {
+  const resolveAll = async (action: 'skip' | 'add') => {
     if (action === 'add') {
-      const allToSave = [...safeContacts, ...conflicts.map(c => c.newContact)];
-      onSave(allToSave);
-    } else if (safeContacts.length > 0) {
-      onSave(safeContacts);
+      // Batch create all duplicate contacts anyway
+      const contactsToForceCreate = conflicts.map(c => ({
+        fullName: c.newContact.fullName,
+        phone: c.newContact.phone,
+        email: c.newContact.email || undefined,
+        company: c.newContact.company || undefined,
+        jobTitle: c.newContact.jobTitle || undefined,
+        source: c.newContact.source,
+        consent: c.newContact.consent,
+      }));
+      
+      try {
+        const result = await contactService.createBatch(contactsToForceCreate);
+        result.created.forEach(c => {
+          if (onContactCreated) onContactCreated(c);
+        });
+        setDuplicatesResolved(prev => prev + conflicts.length);
+      } catch (error: any) {
+        showToast(error.message || 'Failed to add contacts', 'error');
+      }
+    } else {
+      // Skip all - mark as resolved
+      setDuplicatesResolved(prev => prev + conflicts.length);
     }
-    handleClose();
+    
+    setConflicts([]);
+    setOcrStep('results');
   };
 
-  const handleManualSave = () => {
+  const handleManualSave = async () => {
     const errors: Record<string, string> = {};
     if (!manualData.fullName.trim()) errors.fullName = "Name is required";
     if (!manualData.phone.trim()) errors.phone = "Phone is required";
@@ -180,7 +507,44 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
         return;
     }
 
-    checkForDuplicates([manualData]);
+    // Call API to create contact
+    setLoadingCreate(true);
+    setFormErrors({});
+
+    try {
+      const newContact = await contactService.create({
+        fullName: manualData.fullName,
+        phone: manualData.phone,
+        email: manualData.email || undefined,
+        company: manualData.company || undefined,
+        jobTitle: manualData.jobTitle || undefined,
+        source: manualData.source,
+        consent: manualData.consent,
+      });
+
+      // Notify parent of new contact
+      if (onContactCreated) {
+        onContactCreated(newContact);
+      }
+      
+      showToast(t('contactCreated') || "Contact created successfully", "success");
+      handleClose();
+    } catch (error: any) {
+      if (error.errors) {
+        // Backend validation errors - map snake_case to camelCase for form display
+        const mappedErrors: Record<string, string> = {};
+        if (error.errors.full_name) mappedErrors.fullName = error.errors.full_name[0];
+        if (error.errors.phone) mappedErrors.phone = error.errors.phone[0];
+        if (error.errors.email) mappedErrors.email = error.errors.email[0];
+        if (error.errors.company) mappedErrors.company = error.errors.company[0];
+        if (error.errors.job_title) mappedErrors.jobTitle = error.errors.job_title[0];
+        setFormErrors(mappedErrors);
+      } else {
+        showToast(error.message || t('createFailed') || "Failed to create contact", "error");
+      }
+    } finally {
+      setLoadingCreate(false);
+    }
   };
 
   const handleOcrFileChange = useCallback(async (file: File | null) => {
@@ -213,6 +577,8 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
       const results = await processAttendanceList(file);
       if (!results || results.length === 0) throw new Error("empty");
       setOcrData(results);
+      setOcrOriginalData(JSON.parse(JSON.stringify(results))); // Store original for edit tracking
+      setOcrValidationErrors({});
       setOcrStep('review');
       showToast("Scan complete! Please review and verify.", "success");
     } catch (err) {
@@ -226,49 +592,191 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
     const newData = [...ocrData];
     newData[index][field] = value;
     setOcrData(newData);
+    // Clear validation error for this field if user is editing it
+    if (ocrValidationErrors[index]) {
+      const newErrors = { ...ocrValidationErrors };
+      newErrors[index] = newErrors[index].filter(f => f !== field);
+      if (newErrors[index].length === 0) delete newErrors[index];
+      setOcrValidationErrors(newErrors);
+    }
   };
 
-  const processOcrReview = () => {
-    const newContacts: Omit<Contact, 'id' | 'createdAt'>[] = ocrData.map(row => ({
-      fullName: row.fullName,
-      phone: row.phone,
-      email: row.email,
-      company: row.company,
-      jobTitle: '',
-      source: Source.OcrList,
-      consent: ConsentStatus.Unknown,
-    }));
-    checkForDuplicates(newContacts);
+  const handleDeleteRow = (index: number) => {
+    setOcrData(prev => prev.filter((_, i) => i !== index));
+    setOcrOriginalData(prev => prev.filter((_, i) => i !== index));
+    // Clear validation errors for deleted row and re-index remaining errors
+    const newErrors: Record<number, string[]> = {};
+    Object.keys(ocrValidationErrors).forEach((key) => {
+      const keyNum = parseInt(key);
+      const value = ocrValidationErrors[keyNum];
+      if (keyNum < index) {
+        newErrors[keyNum] = value;
+      } else if (keyNum > index) {
+        newErrors[keyNum - 1] = value;
+      }
+    });
+    setOcrValidationErrors(newErrors);
   };
 
-  const handleImportFileChange = (file: File) => {
+  const isFieldEdited = (index: number, field: keyof OcrResultRow): boolean => {
+    if (!ocrOriginalData[index]) return false;
+    return ocrData[index][field] !== ocrOriginalData[index][field];
+  };
+
+  const isRowEdited = (index: number): boolean => {
+    if (!ocrOriginalData[index]) return false;
+    return (
+      ocrData[index].fullName !== ocrOriginalData[index].fullName ||
+      ocrData[index].phone !== ocrOriginalData[index].phone ||
+      ocrData[index].email !== ocrOriginalData[index].email ||
+      ocrData[index].company !== ocrOriginalData[index].company
+    );
+  };
+
+  const getEditedCount = (): number => {
+    return ocrData.filter((_, idx) => isRowEdited(idx)).length;
+  };
+
+  const validateBeforeSave = (): boolean => {
+    const errors: Record<number, string[]> = {};
+    
+    ocrData.forEach((row, idx) => {
+      const rowErrors: string[] = [];
+      if (!row.fullName.trim()) rowErrors.push('fullName');
+      if (!row.phone.trim()) rowErrors.push('phone');
+      if (rowErrors.length > 0) errors[idx] = rowErrors;
+    });
+    
+    setOcrValidationErrors(errors);
+    
+    if (Object.keys(errors).length > 0) {
+      showToast(t('fixValidationErrors') || 'Please fix validation errors before saving', 'error');
+      return false;
+    }
+    
+    return true;
+  };
+
+  const processOcrReview = async () => {
+    if (!validateBeforeSave()) return;
+    
+    setLoadingSave(true);
+    
+    try {
+      // Transform OCR data to API format
+      const contactsToCreate = ocrData.map(row => ({
+        fullName: row.fullName,
+        phone: row.phone,
+        email: row.email || '',
+        company: row.company || '',
+        jobTitle: '',
+        source: Source.OcrList,
+        consent: ConsentStatus.Unknown,
+      }));
+      
+      // Call batch API
+      const result = await contactService.createBatch(contactsToCreate);
+      setBatchResult(result);
+      
+      const { created, duplicates, errors } = result;
+      
+      // Notify parent about successfully created contacts
+      created.forEach(c => {
+        if (onContactCreated) onContactCreated(c);
+      });
+      
+      // Case 1: Has duplicates - show resolution UI (FR25)
+      if (duplicates.length > 0) {
+        // Convert API duplicates to Conflict format for the existing UI
+        const apiConflicts: Conflict[] = duplicates
+          .filter(d => d.existing) // Only include duplicates with existing contact data
+          .map((d, idx) => ({
+            newContact: {
+              fullName: d.input.fullName,
+              phone: d.input.phone,
+              email: d.input.email || '',
+              company: d.input.company || '',
+              jobTitle: d.input.jobTitle || '',
+              source: Source.OcrList,
+              consent: ConsentStatus.Unknown,
+            },
+            existingContact: d.existing as Contact,
+            index: idx,
+          }));
+        
+        if (apiConflicts.length > 0) {
+          setConflicts(apiConflicts);
+          setOcrStep('duplicates');
+          return;
+        }
+      }
+      
+      // Case 2: No duplicates or all duplicates without existing data - show results (FR22)
+      setOcrStep('results');
+      
+    } catch (error: any) {
+      showToast(error.message || t('saveFailed') || 'Failed to save contacts', 'error');
+    } finally {
+      setLoadingSave(false);
+    }
+  };
+
+  const handleImportFileChange = async (file: File) => {
     setImportError(null);
     const extension = file.name.split('.').pop()?.toLowerCase();
+    
     if (!['csv', 'xlsx'].includes(extension || '')) {
       setImportStatus('error');
       setImportError(t('err_invalid_import_type'));
       return;
     }
 
-    setImportStatus('processing');
-    setTimeout(() => {
-      // Logic for real parsing would go here (e.g., using xlsx library)
-      // For now we simulate success or potential empty file error
-      const isSimulatedEmpty = file.size < 10; 
-      if (isSimulatedEmpty) {
-        setImportStatus('error');
-        setImportError(t('err_empty_import'));
-        return;
-      }
+    // File size validation (10MB max)
+    if (file.size > 10 * 1024 * 1024) {
+      setImportStatus('error');
+      setImportError(t('err_file_too_large') || 'File too large. Maximum 10MB.');
+      return;
+    }
 
+    setImportStatus('processing');
+    
+    try {
+      let parsedContacts: ParsedContact[];
+      
+      if (extension === 'csv') {
+        parsedContacts = await parseCSVFile(file);
+      } else {
+        // XLSX parsing using xlsx library
+        parsedContacts = await parseXLSXFile(file);
+      }
+      
+      if (parsedContacts.length === 0) {
+        throw new Error(t('err_empty_import') || 'File contains no contacts.');
+      }
+      
+      // Transform parsed contacts to OcrResultRow format for reusing review UI
+      const ocrFormatData: OcrResultRow[] = parsedContacts.map(c => ({
+        fullName: c.fullName,
+        phone: c.phone,
+        email: c.email || '',
+        company: c.company || '',
+      }));
+      
+      // Store original data for edit tracking
+      setOcrData(ocrFormatData);
+      setOcrOriginalData(JSON.parse(JSON.stringify(ocrFormatData)));
+      setOcrValidationErrors({});
+      setOcrImagePreview(null); // No image for file imports
+      setOcrStep('review');
+      setActiveTab('ocr'); // Switch to OCR tab for review UI
       setImportStatus('success');
-      const imported: Omit<Contact, 'id' | 'createdAt'>[] = [
-        { fullName: 'New Person 1', phone: '123456', email: 'new1@test.com', company: 'NewCo', jobTitle: 'Rep', source: Source.Import, consent: ConsentStatus.Unknown },
-        { fullName: 'Budi Santoso', phone: '6281234567890', email: 'budi.santoso@example.com', company: 'PT Maju Mundur', jobTitle: 'Updated Job', source: Source.Import, consent: ConsentStatus.Unknown },
-        { fullName: 'New Person 2', phone: '789012', email: 'new2@test.com', company: 'NewCo', jobTitle: 'Rep', source: Source.Import, consent: ConsentStatus.Unknown },
-      ];
-      checkForDuplicates(imported);
-    }, 1500);
+      showToast(`${parsedContacts.length} ${t('contactsLoaded') || 'contacts loaded from file'}`, 'success');
+      
+    } catch (error: any) {
+      setImportStatus('error');
+      setImportError(error.message || t('err_parse_failed') || 'Failed to parse file.');
+      showToast(error.message || t('err_parse_failed'), 'error');
+    }
   };
 
   if (!isOpen) return null;
@@ -295,7 +803,9 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
           <div className="bg-gray-50/50 dark:bg-gray-900/50 border-b border-gray-100 dark:border-gray-800 px-8 pt-6">
             <div className="flex justify-between items-center mb-6">
               <h3 className="text-2xl font-black text-gray-900 dark:text-white tracking-tight">
-                {ocrStep === 'duplicates' ? t('duplicatesDetected') : (ocrStep === 'review' ? t('verify_data') : t('ocrWizardTitle'))}
+                {ocrStep === 'results' ? t('importSummary') || 'Import Summary' : 
+                 ocrStep === 'duplicates' ? t('duplicatesDetected') : 
+                 ocrStep === 'review' ? t('verify_data') : t('ocrWizardTitle')}
               </h3>
               <button onClick={handleClose} className="p-2 text-gray-400 hover:text-gray-900 dark:hover:text-white rounded-xl hover:bg-white dark:hover:bg-gray-800 transition-all">
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -303,7 +813,7 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
                 </svg>
               </button>
             </div>
-            {ocrStep !== 'duplicates' && ocrStep !== 'review' && (
+            {ocrStep !== 'duplicates' && ocrStep !== 'review' && ocrStep !== 'results' && (
                 <nav className="flex space-x-8">
                 {(['manual', 'ocr', 'import', 'webform'] as AddTab[]).map(tab => (
                     <button
@@ -329,7 +839,88 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
           </div>
 
           <div className="p-8">
-            {ocrStep === 'duplicates' ? (
+            {ocrStep === 'results' ? (
+              // Import Results Summary (FR22)
+              <div className="space-y-8 animate-in fade-in zoom-in-95 duration-300">
+                <div className="text-center py-6">
+                  <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-gradient-to-br from-green-400 to-emerald-500 flex items-center justify-center shadow-lg shadow-green-500/30">
+                    <svg className="w-10 h-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                  <h2 className="text-3xl font-black text-gray-900 dark:text-white tracking-tight mb-2">
+                    {t('importComplete') || 'Import Complete'}
+                  </h2>
+                  <p className="text-gray-500 font-medium">
+                    {t('importSummaryDesc') || 'Here is a summary of your import operation.'}
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {/* Created */}
+                  <div className="bg-green-50 dark:bg-green-900/20 border border-green-100 dark:border-green-800/50 rounded-3xl p-6 text-center">
+                    <div className="w-14 h-14 mx-auto mb-4 rounded-2xl bg-green-100 dark:bg-green-800/50 flex items-center justify-center">
+                      <svg className="w-7 h-7 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                      </svg>
+                    </div>
+                    <p className="text-4xl font-black text-green-600 mb-1">{batchResult?.created.length || 0}</p>
+                    <p className="text-xs font-black text-green-600/70 uppercase tracking-widest">{t('contactsCreated') || 'Created'}</p>
+                  </div>
+
+                  {/* Duplicates Handled */}
+                  <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/50 rounded-3xl p-6 text-center">
+                    <div className="w-14 h-14 mx-auto mb-4 rounded-2xl bg-amber-100 dark:bg-amber-800/50 flex items-center justify-center">
+                      <svg className="w-7 h-7 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                      </svg>
+                    </div>
+                    <p className="text-4xl font-black text-amber-600 mb-1">
+                      {(batchResult?.duplicates.length || 0) + duplicatesResolved}
+                    </p>
+                    <p className="text-xs font-black text-amber-600/70 uppercase tracking-widest">{t('duplicatesHandled') || 'Duplicates'}</p>
+                  </div>
+
+                  {/* Errors */}
+                  <div className="bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800/50 rounded-3xl p-6 text-center">
+                    <div className="w-14 h-14 mx-auto mb-4 rounded-2xl bg-red-100 dark:bg-red-800/50 flex items-center justify-center">
+                      <svg className="w-7 h-7 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                    </div>
+                    <p className="text-4xl font-black text-red-500 mb-1">{batchResult?.errors.length || 0}</p>
+                    <p className="text-xs font-black text-red-500/70 uppercase tracking-widest">{t('errors') || 'Errors'}</p>
+                  </div>
+                </div>
+
+                {/* Error Details (if any) */}
+                {batchResult?.errors && batchResult.errors.length > 0 && (
+                  <div className="bg-red-50/50 dark:bg-red-900/10 border border-red-100 dark:border-red-900/30 rounded-2xl p-6">
+                    <h4 className="text-sm font-black text-red-600 uppercase tracking-widest mb-4">{t('errorDetails') || 'Error Details'}</h4>
+                    <div className="space-y-3 max-h-40 overflow-y-auto custom-scrollbar">
+                      {batchResult.errors.map((err, idx) => (
+                        <div key={idx} className="flex items-start gap-3 text-sm">
+                          <span className="shrink-0 w-6 h-6 rounded-full bg-red-100 dark:bg-red-800/50 flex items-center justify-center text-red-500 text-xs font-bold">{idx + 1}</span>
+                          <div>
+                            <p className="font-bold text-gray-900 dark:text-white">{err.input.fullName || 'Unknown'}</p>
+                            <p className="text-red-500 text-xs">{err.message}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex justify-center pt-6 border-t border-gray-100 dark:border-gray-800">
+                  <button 
+                    onClick={handleClose}
+                    className="bg-primary-600 text-white px-12 py-4 rounded-2xl font-black text-sm shadow-2xl shadow-primary-500/30 hover:bg-primary-700 active:scale-95 transition-all"
+                  >
+                    {t('done') || 'Done'}
+                  </button>
+                </div>
+              </div>
+            ) : ocrStep === 'duplicates' ? (
                 <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
                     <div className="p-6 bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-800/50 rounded-[2rem] flex items-center justify-between">
                         <div className="flex items-center gap-4">
@@ -492,8 +1083,19 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
                   </div>
                 </div>
                 <div className="flex justify-end pt-8 border-t border-gray-100 dark:border-gray-800">
-                  <button onClick={handleManualSave} className="w-full sm:w-auto bg-primary-600 text-white px-10 py-3.5 rounded-2xl font-black text-sm hover:bg-primary-700 active:scale-95 transition-all shadow-xl shadow-primary-500/20">
-                    {t('submit')}
+                  <button 
+                    onClick={handleManualSave} 
+                    disabled={loadingCreate}
+                    className="w-full sm:w-auto bg-primary-600 text-white px-10 py-3.5 rounded-2xl font-black text-sm hover:bg-primary-700 active:scale-95 transition-all shadow-xl shadow-primary-500/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    {loadingCreate ? (
+                      <>
+                        <SpinnerIcon className="w-4 h-4 animate-spin" />
+                        {t('saving') || 'Saving...'}
+                      </>
+                    ) : (
+                      t('submit')
+                    )}
                   </button>
                 </div>
               </div>
@@ -541,7 +1143,14 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
                       {/* Extracted Data Table */}
                       <div className="flex-1 flex flex-col">
                         <div className="mb-4 flex items-center justify-between">
-                            <p className="text-xs font-medium text-gray-500">{ocrData.length} records detected by AI</p>
+                            <p className="text-xs font-medium text-gray-500">
+                              {ocrData.length} {t('contactsToSave') || 'contacts to save'}
+                              {getEditedCount() > 0 && (
+                                <span className="ml-2 text-amber-500">
+                                  ({getEditedCount()} {t('edited') || 'edited'})
+                                </span>
+                              )}
+                            </p>
                             {!showImageComparison && (
                               <button 
                                 onClick={() => setShowImageComparison(true)}
@@ -560,21 +1169,42 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
                                   {['fullName', 'phone', 'email', 'company'].map(h => (
                                     <th key={h} className="px-6 py-4 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest">{t(h)}</th>
                                   ))}
+                                  <th className="px-2 py-4 text-center text-[10px] font-black text-gray-400 uppercase tracking-widest w-12"></th>
                                 </tr>
                               </thead>
                               <tbody className="bg-white dark:bg-gray-950 divide-y divide-gray-50 dark:divide-gray-800">
                                 {ocrData.map((row, idx) => (
-                                  <tr key={idx} className="group hover:bg-primary-50/30 dark:hover:bg-primary-900/10 transition-colors">
+                                  <tr key={idx} className={`group hover:bg-primary-50/30 dark:hover:bg-primary-900/10 transition-colors ${isRowEdited(idx) ? 'bg-amber-50/30 dark:bg-amber-900/5' : ''}`}>
                                     {(Object.keys(row) as Array<keyof OcrResultRow>).map(field => (
                                       <td key={field} className="px-4 py-3">
                                         <input 
                                           type="text" 
                                           value={row[field]} 
                                           onChange={(e) => handleOcrDataChange(idx, field, e.target.value)}
-                                          className="w-full bg-transparent border-none text-sm font-bold p-1 focus:ring-4 focus:ring-primary-500/10 rounded-xl transition-all dark:text-white group-hover:bg-white dark:group-hover:bg-gray-800"
+                                          className={`w-full text-sm font-bold p-1.5 rounded-xl transition-all dark:text-white ${
+                                            ocrValidationErrors[idx]?.includes(field)
+                                              ? 'bg-red-50 dark:bg-red-900/20 border border-red-500 ring-2 ring-red-500/20'
+                                              : isFieldEdited(idx, field)
+                                                ? 'bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700'
+                                                : 'bg-transparent border border-transparent focus:ring-4 focus:ring-primary-500/10 group-hover:bg-white dark:group-hover:bg-gray-800'
+                                          }`}
                                         />
+                                        {ocrValidationErrors[idx]?.includes(field) && (
+                                          <p className="mt-1 text-[9px] text-red-500 font-bold uppercase">
+                                            {field === 'fullName' ? (t('nameRequired') || 'Required') : (t('phoneRequired') || 'Required')}
+                                          </p>
+                                        )}
                                       </td>
                                     ))}
+                                    <td className="px-2 py-3 text-center">
+                                      <button 
+                                        onClick={() => handleDeleteRow(idx)}
+                                        className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                                        title={t('removeContact') || 'Remove contact'}
+                                      >
+                                        <TrashIcon className="w-4 h-4" />
+                                      </button>
+                                    </td>
                                   </tr>
                                 ))}
                               </tbody>
@@ -584,9 +1214,20 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
                       </div>
                     </div>
                     <div className="flex justify-between items-center pt-6 border-t border-gray-100 dark:border-gray-800">
-                      <button onClick={() => setOcrStep('upload')} className="px-6 py-3 rounded-2xl text-sm font-black uppercase tracking-widest text-gray-400 hover:text-gray-600 transition-all">{t('cancel')}</button>
-                      <button onClick={processOcrReview} className="bg-primary-600 text-white px-10 py-3 rounded-2xl font-black text-sm shadow-2xl shadow-primary-500/30 hover:bg-primary-700 active:scale-95 transition-all">
-                        {t('saveContacts')}
+                      <button onClick={() => setOcrStep('upload')} disabled={loadingSave} className="px-6 py-3 rounded-2xl text-sm font-black uppercase tracking-widest text-gray-400 hover:text-gray-600 transition-all disabled:opacity-50">{t('cancel')}</button>
+                      <button 
+                        onClick={processOcrReview} 
+                        disabled={loadingSave || ocrData.length === 0}
+                        className="bg-primary-600 text-white px-10 py-3 rounded-2xl font-black text-sm shadow-2xl shadow-primary-500/30 hover:bg-primary-700 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                      >
+                        {loadingSave ? (
+                          <>
+                            <SpinnerIcon className="w-4 h-4 animate-spin" />
+                            {t('saving') || 'Saving...'}
+                          </>
+                        ) : (
+                          t('saveContacts')
+                        )}
                       </button>
                     </div>
                   </div>
@@ -604,8 +1245,20 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
                       <p className="text-sm text-gray-500 leading-relaxed font-medium">{t('importDesc')}</p>
                     </div>
                     <div className="flex flex-wrap gap-3">
-                      <button className="flex items-center gap-2 px-6 py-3 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl hover:bg-gray-50 dark:hover:bg-gray-800 transition-all text-xs font-black uppercase tracking-widest shadow-sm">CSV</button>
-                      <button className="flex items-center gap-2 px-6 py-3 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl hover:bg-gray-50 dark:hover:bg-gray-800 transition-all text-xs font-black uppercase tracking-widest shadow-sm">XLSX</button>
+                      <button 
+                        onClick={downloadCSVTemplate}
+                        className="flex items-center gap-2 px-6 py-3 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl hover:bg-gray-50 dark:hover:bg-gray-800 transition-all text-xs font-black uppercase tracking-widest shadow-sm"
+                      >
+                        <DownloadIcon className="w-4 h-4" />
+                        CSV
+                      </button>
+                      <button 
+                        onClick={downloadXLSXTemplate}
+                        className="flex items-center gap-2 px-6 py-3 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl hover:bg-gray-50 dark:hover:bg-gray-800 transition-all text-xs font-black uppercase tracking-widest shadow-sm"
+                      >
+                        <DownloadIcon className="w-4 h-4" />
+                        XLSX
+                      </button>
                     </div>
                   </div>
                   <div className="space-y-6">

@@ -60,13 +60,13 @@ const Sidebar: React.FC<SidebarProps> = ({ activeItem, setActiveItem, t, role, u
         <div className="flex items-center gap-4 p-4 rounded-[2rem] border border-gray-100 dark:border-gray-800 bg-primary-50/30 dark:bg-primary-900/10">
           <div className="w-11 h-11 rounded-full flex items-center justify-center font-black uppercase shadow-inner bg-white dark:bg-primary-900 text-primary-600 dark:text-primary-400 overflow-hidden border border-primary-100 dark:border-primary-800">
             {user.avatarUrl ? (
-              <img src={user.avatarUrl} alt={user.fullName} className="w-full h-full object-cover" />
+              <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
             ) : (
-              getInitials(user.fullName)
+              getInitials(user.name)
             )}
           </div>
           <div className="flex-1 min-w-0 text-left">
-            <p className="text-sm font-black text-gray-900 dark:text-white truncate">{user.fullName}</p>
+            <p className="text-sm font-black text-gray-900 dark:text-white truncate">{user.name}</p>
             <p className="text-[10px] font-black uppercase tracking-widest text-primary-600/80 dark:text-primary-400/80">
               {t(`role_${role}`)}
             </p>

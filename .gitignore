@@ -1,0 +1,12 @@
+# Ignore everything
+*
+
+# But not these folders
+!frontend/
+!frontend/**
+!backend/
+!backend/**
+
+# And not these important files
+!.gitignore
+!README.md

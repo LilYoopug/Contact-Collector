@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Contact } from '../types';
 import { DownloadIcon, SpinnerIcon } from './icons';
 
@@ -8,19 +8,40 @@ interface ExportModalProps {
   onClose: () => void;
   filteredContacts: Contact[];
   allContacts: Contact[];
+  selectedContacts?: Contact[];  // Story 5.7: Export selected contacts
   t: (key: string) => string;
 }
 
 type ExportFormat = 'csv' | 'json';
-type ExportRange = 'all' | 'filtered';
+type ExportRange = 'all' | 'filtered' | 'selected';  // Added 'selected' for Story 5.7
 
-const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, filteredContacts, allContacts, t }) => {
+const ExportModal: React.FC<ExportModalProps> = ({ 
+  isOpen, 
+  onClose, 
+  filteredContacts, 
+  allContacts, 
+  selectedContacts = [],  // Default to empty array
+  t 
+}) => {
   const [format, setFormat] = useState<ExportFormat>('csv');
   const [range, setRange] = useState<ExportRange>('filtered');
   const [isExporting, setIsExporting] = useState(false);
   const [selectedColumns, setSelectedColumns] = useState<string[]>([
     'fullName', 'phone', 'email', 'company', 'jobTitle', 'source', 'consent', 'createdAt'
   ]);
+
+  const hasSelection = selectedContacts.length > 0;
+
+  // Default to 'selected' if contacts are selected, otherwise 'filtered' (Story 5.7 AC#1)
+  useEffect(() => {
+    if (isOpen) {
+      if (hasSelection) {
+        setRange('selected');
+      } else {
+        setRange('filtered');
+      }
+    }
+  }, [hasSelection, isOpen]);
 
   const columns = [
     { id: 'fullName', label: t('fullName') },
@@ -33,6 +54,19 @@ const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, filteredCont
     { id: 'createdAt', label: t('addedOn') },
   ];
 
+  // Determine data to export based on range (Story 5.7)
+  const dataToExport = useMemo(() => {
+    switch (range) {
+      case 'selected':
+        return selectedContacts;
+      case 'filtered':
+        return filteredContacts;
+      case 'all':
+      default:
+        return allContacts;
+    }
+  }, [range, selectedContacts, filteredContacts, allContacts]);
+
   if (!isOpen) return null;
 
   const toggleColumn = (id: string) => {
@@ -41,38 +75,72 @@ const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, filteredCont
     );
   };
 
+  /**
+   * Escape value for CSV format (Story 5.5 AC#4)
+   * - Handles null/undefined as empty string
+   * - Handles commas, quotes, and newlines
+   */
+  const escapeCSV = (value: any): string => {
+    if (value === null || value === undefined) return '""';
+    
+    let str = String(value);
+    
+    // Convert Date to ISO string
+    if (value instanceof Date) {
+      str = value.toISOString();
+    }
+    
+    // Escape internal quotes and wrap in quotes
+    return `"${str.replace(/"/g, '""')}"`;
+  };
+
   const handleExport = () => {
     setIsExporting(true);
-    const dataToExport = range === 'all' ? allContacts : filteredContacts;
     
     // Simulate slight delay for UX
     setTimeout(() => {
-      if (format === 'csv') {
-        const header = selectedColumns.map(col => columns.find(c => c.id === col)?.label).join(',');
-        const rows = dataToExport.map(contact => {
-          return selectedColumns.map(col => {
-            let val = (contact as any)[col];
-            if (val instanceof Date) val = val.toISOString();
-            // Simple CSV escape
-            return `"${String(val).replace(/"/g, '""')}"`;
-          }).join(',');
-        });
-        const csvContent = [header, ...rows].join('\n');
-        downloadFile(csvContent, `contacts-export-${Date.now()}.csv`, 'text/csv');
-      } else {
-        const cleanData = dataToExport.map(contact => {
-          const obj: any = {};
-          selectedColumns.forEach(col => {
-            obj[col] = (contact as any)[col];
+      try {
+        if (format === 'csv') {
+          // Story 5.5: CSV Export
+          const header = selectedColumns.map(col => columns.find(c => c.id === col)?.label).join(',');
+          const rows = dataToExport.map(contact => {
+            return selectedColumns.map(col => {
+              const val = (contact as any)[col];
+              return escapeCSV(val);
+            }).join(',');
           });
-          return obj;
-        });
-        const jsonContent = JSON.stringify(cleanData, null, 2);
-        downloadFile(jsonContent, `contacts-export-${Date.now()}.json`, 'application/json');
+          const csvContent = [header, ...rows].join('\n');
+          downloadFile(csvContent, `contacts-export-${Date.now()}.csv`, 'text/csv');
+        } else {
+          // Story 5.6: JSON Export
+          const cleanData = dataToExport.map(contact => {
+            const obj: any = {};
+            selectedColumns.forEach(col => {
+              let value = (contact as any)[col];
+              
+              // Convert Date to ISO string for JSON (Story 5.6 AC#5)
+              if (value instanceof Date) {
+                value = value.toISOString();
+              }
+              
+              obj[col] = value;
+            });
+            return obj;
+          });
+          const jsonContent = JSON.stringify(cleanData, null, 2);
+          downloadFile(jsonContent, `contacts-export-${Date.now()}.json`, 'application/json');
+        }
+        
+        setIsExporting(false);
+        onClose();
+      } catch (error) {
+        // Story 5.5/5.6: Error handling
+        console.error('Export failed:', error);
+        setIsExporting(false);
+        // Show error to user (modal stays open)
+        alert(t('exportFailed') || 'Export failed. Please try again.');
       }
-      setIsExporting(false);
-      onClose();
-    }, 1000);
+    }, 500);
   };
 
   const downloadFile = (content: string, fileName: string, mimeType: string) => {
@@ -105,19 +173,84 @@ const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, filteredCont
           </div>
 
           <div className="p-6 space-y-6">
-            {/* Export Range */}
+            {/* Export Range - Story 5.7 */}
             <div>
               <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-3">{t('exportRange')}</label>
-              <div className="flex gap-4">
-                <label className={`flex-1 flex flex-col items-center justify-center p-4 border-2 rounded-2xl cursor-pointer transition-all ${range === 'filtered' ? 'border-primary-600 bg-primary-50 dark:bg-primary-900/20' : 'border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-800'}`}>
-                  <input type="radio" name="range" className="sr-only" checked={range === 'filtered'} onChange={() => setRange('filtered')} />
-                  <span className="text-sm font-bold text-gray-900 dark:text-white">{t('filteredContacts')}</span>
-                  <span className="text-xs text-gray-500 mt-1">{filteredContacts.length} {t('results')}</span>
+              <div className="flex flex-col gap-2">
+                {/* Export Selected - only shown if contacts selected (Story 5.7 AC#1) */}
+                {hasSelection && (
+                  <label className={`flex items-center justify-between p-4 border-2 rounded-2xl cursor-pointer transition-all ${
+                    range === 'selected' 
+                      ? 'border-primary-600 bg-primary-50 dark:bg-primary-900/20' 
+                      : 'border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-800'
+                  }`}>
+                    <div className="flex items-center gap-3">
+                      <input 
+                        type="radio" 
+                        name="range" 
+                        className="w-4 h-4 text-primary-600"
+                        checked={range === 'selected'} 
+                        onChange={() => setRange('selected')} 
+                      />
+                      <div>
+                        <span className="text-sm font-bold text-gray-900 dark:text-white">
+                          {t('selectedContacts') || 'Selected contacts'}
+                        </span>
+                        <span className="ml-2 text-xs text-primary-600 dark:text-primary-400 font-medium">
+                          ({t('recommended') || 'recommended'})
+                        </span>
+                      </div>
+                    </div>
+                    <span className="text-xs text-gray-500 bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded-full">
+                      {selectedContacts.length} {t('contacts') || 'contacts'}
+                    </span>
+                  </label>
+                )}
+
+                {/* Export Filtered */}
+                <label className={`flex items-center justify-between p-4 border-2 rounded-2xl cursor-pointer transition-all ${
+                  range === 'filtered' 
+                    ? 'border-primary-600 bg-primary-50 dark:bg-primary-900/20' 
+                    : 'border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-800'
+                }`}>
+                  <div className="flex items-center gap-3">
+                    <input 
+                      type="radio" 
+                      name="range" 
+                      className="w-4 h-4 text-primary-600"
+                      checked={range === 'filtered'} 
+                      onChange={() => setRange('filtered')} 
+                    />
+                    <span className="text-sm font-bold text-gray-900 dark:text-white">
+                      {t('filteredContacts')}
+                    </span>
+                  </div>
+                  <span className="text-xs text-gray-500 bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded-full">
+                    {filteredContacts.length} {t('results')}
+                  </span>
                 </label>
-                <label className={`flex-1 flex flex-col items-center justify-center p-4 border-2 rounded-2xl cursor-pointer transition-all ${range === 'all' ? 'border-primary-600 bg-primary-50 dark:bg-primary-900/20' : 'border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-800'}`}>
-                  <input type="radio" name="range" className="sr-only" checked={range === 'all'} onChange={() => setRange('all')} />
-                  <span className="text-sm font-bold text-gray-900 dark:text-white">{t('allContacts')}</span>
-                  <span className="text-xs text-gray-500 mt-1">{allContacts.length} {t('results')}</span>
+
+                {/* Export All */}
+                <label className={`flex items-center justify-between p-4 border-2 rounded-2xl cursor-pointer transition-all ${
+                  range === 'all' 
+                    ? 'border-primary-600 bg-primary-50 dark:bg-primary-900/20' 
+                    : 'border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-800'
+                }`}>
+                  <div className="flex items-center gap-3">
+                    <input 
+                      type="radio" 
+                      name="range" 
+                      className="w-4 h-4 text-primary-600"
+                      checked={range === 'all'} 
+                      onChange={() => setRange('all')} 
+                    />
+                    <span className="text-sm font-bold text-gray-900 dark:text-white">
+                      {t('allContacts')}
+                    </span>
+                  </div>
+                  <span className="text-xs text-gray-500 bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded-full">
+                    {allContacts.length} {t('results')}
+                  </span>
                 </label>
               </div>
             </div>
@@ -148,6 +281,13 @@ const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, filteredCont
                 ))}
               </div>
             </div>
+
+            {/* Export Preview Count */}
+            <div className="p-4 bg-gray-50 dark:bg-gray-900 rounded-2xl">
+              <p className="text-sm text-center text-gray-600 dark:text-gray-400">
+                <span className="font-bold text-gray-900 dark:text-white">{dataToExport.length}</span> {t('contacts') || 'contacts'} {t('willBeExported') || 'will be exported'}
+              </p>
+            </div>
           </div>
 
           <div className="p-6 bg-gray-50 dark:bg-gray-900/50 flex flex-col sm:flex-row gap-3">
@@ -155,7 +295,7 @@ const ExportModal: React.FC<ExportModalProps> = ({ isOpen, onClose, filteredCont
               {t('cancel')}
             </button>
             <button 
-              disabled={isExporting || selectedColumns.length === 0}
+              disabled={isExporting || selectedColumns.length === 0 || dataToExport.length === 0}
               onClick={handleExport} 
               className="flex-1 px-4 py-2.5 bg-primary-600 text-white rounded-xl hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all font-bold flex items-center justify-center gap-2 shadow-lg shadow-primary-500/20"
             >

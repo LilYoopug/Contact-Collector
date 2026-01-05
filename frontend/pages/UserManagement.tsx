@@ -1,38 +1,190 @@
 
-import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { User, UserRole } from '../types';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { User, UserRole, DashboardStats } from '../types';
 import { DownloadIcon, SpinnerIcon, SortAscIcon, SortDescIcon, SortDefaultIcon } from '../components/icons';
 import { useAppUI } from '../App';
+import { userService } from '../services/userService';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
 
 interface UserManagementProps {
-  users: User[];
   t: (key: string) => string;
-  onUpdateUsers: (updater: (prev: User[]) => User[]) => void;
+  currentUser: User | null;
 }
+
+// HIGH-4 FIX: Stats Cards Component
+interface StatsCardProps {
+  title: string;
+  value: number;
+  icon: React.ReactNode;
+  color: 'primary' | 'green' | 'blue' | 'purple';
+}
+
+const StatsCard: React.FC<StatsCardProps> = ({ title, value, icon, color }) => {
+  const colorClasses = {
+    primary: 'bg-primary-50 dark:bg-primary-900/20 text-primary-600',
+    green: 'bg-green-50 dark:bg-green-900/20 text-green-600',
+    blue: 'bg-blue-50 dark:bg-blue-900/20 text-blue-600',
+    purple: 'bg-purple-50 dark:bg-purple-900/20 text-purple-600',
+  };
+
+  return (
+    <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 p-6 shadow-sm">
+      <div className="flex items-center gap-4">
+        <div className={`w-12 h-12 rounded-xl ${colorClasses[color]} flex items-center justify-center`}>
+          {icon}
+        </div>
+        <div>
+          <p className="text-2xl font-black text-gray-900 dark:text-white">{value.toLocaleString()}</p>
+          <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">{title}</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// MED-1 FIX: Custom Confirmation Modal Component
+interface ConfirmModalProps {
+  isOpen: boolean;
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  loading?: boolean;
+}
+
+const ConfirmModal: React.FC<ConfirmModalProps> = ({ isOpen, title, message, confirmLabel, onConfirm, onCancel, loading }) => {
+  if (!isOpen) return null;
+  
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto">
+      <div className="fixed inset-0 bg-black/70 backdrop-blur-md transition-opacity" onClick={onCancel} />
+      <div className="flex min-h-full items-center justify-center p-4">
+        <div className="relative w-full max-w-md bg-white dark:bg-gray-950 rounded-[2rem] shadow-2xl border border-gray-100 dark:border-gray-800 overflow-hidden animate-in zoom-in-95 duration-200">
+          <div className="p-8 text-center">
+            <div className="w-16 h-16 mx-auto mb-6 rounded-2xl bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
+              <svg className="w-8 h-8 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <h3 className="text-xl font-black text-gray-900 dark:text-white mb-2">{title}</h3>
+            <p className="text-gray-500 font-medium mb-8">{message}</p>
+            <div className="flex gap-3">
+              <button
+                onClick={onCancel}
+                disabled={loading}
+                className="flex-1 px-4 py-3 border border-gray-200 dark:border-gray-800 rounded-xl text-sm font-bold text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-900 transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={onConfirm}
+                disabled={loading}
+                className="flex-1 px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl text-sm font-bold shadow-lg shadow-red-500/20 transition-all flex items-center justify-center gap-2"
+              >
+                {loading && <SpinnerIcon className="w-4 h-4 animate-spin" />}
+                {confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Helper function to format relative time
+const formatLastLogin = (dateString: string | null): string => {
+  if (!dateString) return 'Never';
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins} min ago`;
+  if (diffMins < 1440) return `${Math.floor(diffMins / 60)}h ago`;
+  if (diffMins < 10080) return `${Math.floor(diffMins / 1440)}d ago`;
+  
+  return date.toLocaleDateString('en-US', { 
+    month: 'short', 
+    day: 'numeric', 
+    year: 'numeric' 
+  });
+};
 
 type SortKey = keyof User | 'totalContacts';
 
-const UserManagement: React.FC<UserManagementProps> = ({ users, t, onUpdateUsers }) => {
+const UserManagement: React.FC<UserManagementProps> = ({ t, currentUser }) => {
   const { showToast, setGlobalLoading } = useAppUI();
+  
+  // User data state
+  const [users, setUsers] = useState<User[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  
+  // HIGH-4 FIX: Stats state
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [loadingStats, setLoadingStats] = useState(true);
+  
   const [search, setSearch] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
   const [isExporting, setIsExporting] = useState<'xlsx' | 'pdf' | null>(null);
   const exportMenuRef = useRef<HTMLDivElement>(null);
+  
+  // MED-1 FIX: Delete confirmation state
+  const [userToDelete, setUserToDelete] = useState<User | null>(null);
+  const [loadingDelete, setLoadingDelete] = useState(false);
 
   // Sorting State
   const [sortConfig, setSortConfig] = useState<{ key: SortKey; direction: 'asc' | 'desc' | null }>({
-    key: 'joinedAt',
+    key: 'createdAt',
     direction: 'desc'
   });
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
+
+  // HIGH-4 FIX: Fetch stats from API
+  const fetchStats = useCallback(async () => {
+    setLoadingStats(true);
+    try {
+      const data = await userService.getStats();
+      setStats(data);
+    } catch (err: any) {
+      console.error('Failed to load stats:', err.message);
+    } finally {
+      setLoadingStats(false);
+    }
+  }, []);
+
+  // Fetch users from API
+  const fetchUsers = useCallback(async () => {
+    setLoadingUsers(true);
+    setError(null);
+    try {
+      const data = await userService.getAll();
+      setUsers(data);
+    } catch (err: any) {
+      if (err.status === 403) {
+        setError('Access denied. Admin privileges required.');
+      } else {
+        setError(err.message || 'Failed to load users');
+      }
+    } finally {
+      setLoadingUsers(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchUsers();
+    fetchStats(); // HIGH-4 FIX: Load stats on mount
+  }, [fetchUsers, fetchStats]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -43,6 +195,23 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, t, onUpdateUsers
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  // Role-based access check
+  if (currentUser && currentUser.role !== UserRole.ADMIN) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] animate-in fade-in duration-500">
+        <div className="w-20 h-20 rounded-3xl bg-red-100 dark:bg-red-900/30 flex items-center justify-center mb-6">
+          <svg className="w-10 h-10 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+        </div>
+        <h2 className="text-2xl font-black text-gray-900 dark:text-white mb-2">Access Denied</h2>
+        <p className="text-gray-500 font-medium text-center max-w-md">
+          You don't have permission to access this page. Admin privileges are required.
+        </p>
+      </div>
+    );
+  }
 
   const handleSort = (key: SortKey) => {
     let direction: 'asc' | 'desc' | null = 'asc';
@@ -55,7 +224,7 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, t, onUpdateUsers
 
   const filteredUsers = useMemo(() => {
     let result = users.filter(u => 
-      u.fullName.toLowerCase().includes(search.toLowerCase()) || 
+      u.name.toLowerCase().includes(search.toLowerCase()) || 
       u.email.toLowerCase().includes(search.toLowerCase())
     );
 
@@ -97,15 +266,34 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, t, onUpdateUsers
     return filteredUsers.slice(startIndex, startIndex + itemsPerPage);
   }, [filteredUsers, currentPage]);
 
-  const handleDelete = (id: string) => {
-    if (confirm("Are you sure you want to delete this user? This action cannot be undone.")) {
-      setGlobalLoading(true);
-      setTimeout(() => {
-        onUpdateUsers(prev => prev.filter(u => u.id !== id));
-        showToast("User deleted successfully", "success");
-        setGlobalLoading(false);
-      }, 800);
+  // MED-1 FIX: Use custom modal instead of native confirm()
+  const handleDeleteClick = (user: User) => {
+    // LOW-1 FIX: Prevent deleting own account
+    if (user.id === currentUser?.id) {
+      showToast("Cannot delete your own account", "error");
+      return;
     }
+    setUserToDelete(user);
+  };
+
+  const confirmDelete = async () => {
+    if (!userToDelete) return;
+    
+    setLoadingDelete(true);
+    try {
+      await userService.delete(userToDelete.id);
+      setUsers(prev => prev.filter(u => u.id !== userToDelete.id));
+      showToast("User deleted successfully", "success");
+      setUserToDelete(null);
+    } catch (err: any) {
+      showToast(err.message || "Failed to delete user", "error");
+    } finally {
+      setLoadingDelete(false);
+    }
+  };
+
+  const cancelDelete = () => {
+    setUserToDelete(null);
   };
 
   const handleOpenCreate = () => {
@@ -125,11 +313,11 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, t, onUpdateUsers
     
     setTimeout(() => {
       const data = filteredUsers.map(u => ({
-        [t('fullName')]: u.fullName,
+        [t('fullName')]: u.name,
         [t('emailLabel')]: u.email,
         [t('role')]: t(`role_${u.role}`),
         'Total Contacts': u.totalContacts || 0,
-        [t('joinedAt')]: new Date(u.joinedAt).toLocaleDateString()
+        [t('joinedAt')]: new Date(u.createdAt).toLocaleDateString()
       }));
 
       const ws = XLSX.utils.json_to_sheet(data);
@@ -156,11 +344,11 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, t, onUpdateUsers
       doc.text(`Generated on: ${new Date().toLocaleString()}`, 14, 30);
       
       const tableData = filteredUsers.map(u => [
-        u.fullName,
+        u.name,
         u.email,
         t(`role_${u.role}`),
         u.totalContacts || 0,
-        new Date(u.joinedAt).toLocaleDateString()
+        new Date(u.createdAt).toLocaleDateString()
       ]);
 
       (doc as any).autoTable({
@@ -209,12 +397,89 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, t, onUpdateUsers
       : <SortDescIcon className="w-3.5 h-3.5 text-primary-500" />;
   };
 
+  // Loading state
+  if (loadingUsers) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] animate-in fade-in duration-500">
+        <SpinnerIcon className="w-12 h-12 text-primary-500 animate-spin mb-4" />
+        <p className="text-gray-500 font-medium">Loading users...</p>
+      </div>
+    );
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] animate-in fade-in duration-500">
+        <div className="w-20 h-20 rounded-3xl bg-red-100 dark:bg-red-900/30 flex items-center justify-center mb-6">
+          <svg className="w-10 h-10 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <h2 className="text-2xl font-black text-gray-900 dark:text-white mb-2">Error Loading Users</h2>
+        <p className="text-gray-500 font-medium text-center max-w-md mb-6">{error}</p>
+        <button
+          onClick={fetchUsers}
+          className="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white font-bold rounded-2xl shadow-lg shadow-primary-500/20 active:scale-95 transition-all"
+        >
+          Try Again
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8 animate-in fade-in duration-500 pb-12">
       <div>
         <h2 className="text-3xl font-black text-gray-900 dark:text-white tracking-tight">{t('userManagement')}</h2>
         <p className="text-sm text-gray-500 font-medium">{t('admin_dashboard')}</p>
       </div>
+
+      {/* HIGH-4 FIX: Stats Cards Section */}
+      {stats && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <StatsCard
+            title="Total Users"
+            value={stats.totalUsers}
+            color="primary"
+            icon={
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+              </svg>
+            }
+          />
+          <StatsCard
+            title="Active This Month"
+            value={stats.activeUsersThisMonth}
+            color="green"
+            icon={
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            }
+          />
+          <StatsCard
+            title="Total Contacts"
+            value={stats.totalContacts}
+            color="blue"
+            icon={
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+              </svg>
+            }
+          />
+          <StatsCard
+            title="Added This Week"
+            value={stats.contactsThisWeek}
+            color="purple"
+            icon={
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+              </svg>
+            }
+          />
+        </div>
+      )}
 
       <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
         <div className="relative w-full md:max-w-md group">
@@ -293,12 +558,12 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, t, onUpdateUsers
               <thead className="bg-gray-50/50 dark:bg-gray-800/50">
                 <tr>
                   <th 
-                    onClick={() => handleSort('fullName')}
+                    onClick={() => handleSort('name')}
                     className="px-8 py-5 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest cursor-pointer hover:bg-gray-100/50 dark:hover:bg-gray-700/30 transition-colors group"
                   >
                     <div className="flex items-center gap-2">
                         {t('fullName')}
-                        {renderSortIcon('fullName')}
+                        {renderSortIcon('name')}
                     </div>
                   </th>
                   <th 
@@ -329,12 +594,21 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, t, onUpdateUsers
                     </div>
                   </th>
                   <th 
-                    onClick={() => handleSort('joinedAt')}
+                    onClick={() => handleSort('createdAt')}
                     className="px-8 py-5 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest cursor-pointer hover:bg-gray-100/50 dark:hover:bg-gray-700/30 transition-colors group"
                   >
                     <div className="flex items-center gap-2">
                         {t('joinedAt')}
-                        {renderSortIcon('joinedAt')}
+                        {renderSortIcon('createdAt')}
+                    </div>
+                  </th>
+                  <th 
+                    onClick={() => handleSort('lastLoginAt')}
+                    className="px-8 py-5 text-left text-[10px] font-black text-gray-400 uppercase tracking-widest cursor-pointer hover:bg-gray-100/50 dark:hover:bg-gray-700/30 transition-colors group"
+                  >
+                    <div className="flex items-center gap-2">
+                        Last Login
+                        {renderSortIcon('lastLoginAt')}
                     </div>
                   </th>
                   <th className="px-8 py-5 text-right text-[10px] font-black text-gray-400 uppercase tracking-widest">{t('actions')}</th>
@@ -347,12 +621,12 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, t, onUpdateUsers
                       <div className="flex items-center gap-4">
                         <div className="w-10 h-10 rounded-2xl bg-gray-50 dark:bg-gray-800 flex items-center justify-center font-black text-gray-500 text-base shadow-inner overflow-hidden border border-gray-100 dark:border-gray-700">
                           {user.avatarUrl ? (
-                            <img src={user.avatarUrl} alt={user.fullName} className="w-full h-full object-cover" />
+                            <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
                           ) : (
-                            user.fullName.charAt(0)
+                            user.name.charAt(0)
                           )}
                         </div>
-                        <span className="text-sm font-bold text-gray-900 dark:text-white">{user.fullName}</span>
+                        <span className="text-sm font-bold text-gray-900 dark:text-white">{user.name}</span>
                       </div>
                     </td>
                     <td className="px-8 py-5 whitespace-nowrap text-sm text-gray-500 font-medium">{user.email}</td>
@@ -367,7 +641,8 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, t, onUpdateUsers
                         <span className="text-[9px] text-gray-400 uppercase font-black tracking-widest">collected</span>
                       </div>
                     </td>
-                    <td className="px-8 py-5 whitespace-nowrap text-sm text-gray-500 font-medium">{new Date(user.joinedAt).toLocaleDateString()}</td>
+                    <td className="px-8 py-5 whitespace-nowrap text-sm text-gray-500 font-medium">{new Date(user.createdAt).toLocaleDateString()}</td>
+                    <td className="px-8 py-5 whitespace-nowrap text-sm text-gray-500 font-medium">{formatLastLogin(user.lastLoginAt)}</td>
                     <td className="px-8 py-5 whitespace-nowrap text-right space-x-4">
                       <button 
                         onClick={() => handleOpenEdit(user)}
@@ -376,8 +651,9 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, t, onUpdateUsers
                         {t('edit')}
                       </button>
                       <button 
-                        onClick={() => handleDelete(user.id)}
-                        className="text-red-600 font-black text-xs hover:text-red-700 transition-colors"
+                        onClick={() => handleDeleteClick(user)}
+                        disabled={user.id === currentUser?.id}
+                        className={`font-black text-xs transition-colors ${user.id === currentUser?.id ? 'text-gray-300 dark:text-gray-600 cursor-not-allowed' : 'text-red-600 hover:text-red-700'}`}
                       >
                         Delete
                       </button>
@@ -445,33 +721,57 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, t, onUpdateUsers
         </div>
       )}
 
+      {/* MED-1 FIX: Delete Confirmation Modal */}
+      <ConfirmModal
+        isOpen={!!userToDelete}
+        title="Delete User"
+        message={`Are you sure you want to delete ${userToDelete?.name}? This action cannot be undone and will delete all their contacts.`}
+        confirmLabel="Delete"
+        onConfirm={confirmDelete}
+        onCancel={cancelDelete}
+        loading={loadingDelete}
+      />
+
       {isModalOpen && (
         <UserFormModal 
           user={editingUser} 
+          currentUser={currentUser}
           onClose={() => setIsModalOpen(false)} 
-          onSave={(data) => {
+          onSave={async (data) => {
             setGlobalLoading(true);
-            setTimeout(() => {
+            try {
               if (editingUser) {
-                onUpdateUsers(prev => prev.map(u => u.id === editingUser.id ? { ...u, ...data } : u));
+                // MED-4 FIX: Include password if provided
+                const updatePayload: any = {
+                  name: data.name,
+                  email: data.email,
+                  phone: data.phone || undefined,
+                  role: data.role,
+                };
+                // Only include password if it was filled in
+                if (data.password) {
+                  updatePayload.password = data.password;
+                }
+                const updatedUser = await userService.update(editingUser.id, updatePayload);
+                setUsers(prev => prev.map(u => u.id === editingUser.id ? updatedUser : u));
                 showToast("User updated successfully", "success");
               } else {
-                const newUser: User = {
-                  id: `u-${Date.now()}`,
-                  fullName: data.fullName,
+                const newUser = await userService.create({
+                  name: data.name,
                   email: data.email,
-                  phone: data.phone,
-                  role: data.role,
                   password: data.password,
-                  joinedAt: new Date(),
-                  totalContacts: 0
-                };
-                onUpdateUsers(prev => [...prev, newUser]);
+                  role: data.role,
+                  phone: data.phone || undefined,
+                });
+                setUsers(prev => [...prev, newUser]);
                 showToast("New user created successfully", "success");
               }
               setIsModalOpen(false);
+            } catch (err: any) {
+              showToast(err.message || "Failed to save user", "error");
+            } finally {
               setGlobalLoading(false);
-            }, 800);
+            }
           }}
         />
       )}
@@ -481,14 +781,15 @@ const UserManagement: React.FC<UserManagementProps> = ({ users, t, onUpdateUsers
 
 interface UserFormModalProps {
   user: User | null;
+  currentUser: User | null;
   onClose: () => void;
   onSave: (data: any) => void;
 }
 
-const UserFormModal: React.FC<UserFormModalProps> = ({ user, onClose, onSave }) => {
+const UserFormModal: React.FC<UserFormModalProps> = ({ user, currentUser, onClose, onSave }) => {
   const { showToast } = useAppUI();
   const [formData, setFormData] = useState({
-    fullName: user?.fullName || '',
+    name: user?.name || '',
     email: user?.email || '',
     phone: user?.phone || '',
     role: user?.role || UserRole.USER,
@@ -496,13 +797,23 @@ const UserFormModal: React.FC<UserFormModalProps> = ({ user, onClose, onSave }) 
     confirmPassword: ''
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  
+  // LOW-2 FIX: Check if editing self
+  const isEditingSelf = user?.id === currentUser?.id;
 
   const validate = () => {
     const e: Record<string, string> = {};
-    if (!formData.fullName.trim()) e.fullName = "Name required";
+    if (!formData.name.trim()) e.name = "Name required";
     if (!formData.email.trim()) e.email = "Email required";
     if (!user && !formData.password) e.password = "Password required";
-    if (!user && formData.password !== formData.confirmPassword) e.confirmPassword = "Passwords mismatch";
+    // MED-4 FIX: Also validate password match when editing if password provided
+    if (formData.password && formData.password !== formData.confirmPassword) {
+      e.confirmPassword = "Passwords mismatch";
+    }
+    // Password min length check if provided
+    if (formData.password && formData.password.length < 8) {
+      e.password = "Password must be at least 8 characters";
+    }
     
     setErrors(e);
     return Object.keys(e).length === 0;
@@ -532,12 +843,12 @@ const UserFormModal: React.FC<UserFormModalProps> = ({ user, onClose, onSave }) 
                 <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Full Name</label>
                 <input 
                   type="text" 
-                  value={formData.fullName}
+                  value={formData.name}
                   onChange={e => {
-                    setFormData({ ...formData, fullName: e.target.value });
-                    if (errors.fullName) setErrors({...errors, fullName: ''});
+                    setFormData({ ...formData, name: e.target.value });
+                    if (errors.name) setErrors({...errors, name: ''});
                   }}
-                  className={`w-full bg-gray-50 dark:bg-gray-900 border rounded-2xl px-4 py-3.5 text-sm font-semibold outline-none transition-all dark:text-white ${errors.fullName ? 'border-red-500 ring-4 ring-red-500/10' : 'border-gray-100 dark:border-gray-800 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10'}`}
+                  className={`w-full bg-gray-50 dark:bg-gray-900 border rounded-2xl px-4 py-3.5 text-sm font-semibold outline-none transition-all dark:text-white ${errors.name ? 'border-red-500 ring-4 ring-red-500/10' : 'border-gray-100 dark:border-gray-800 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10'}`}
                   placeholder="John Smith"
                 />
               </div>
@@ -565,47 +876,58 @@ const UserFormModal: React.FC<UserFormModalProps> = ({ user, onClose, onSave }) 
                 />
               </div>
 
-              {!user && (
-                <>
-                  <div>
-                    <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Password</label>
-                    <input 
-                      type="password" 
-                      value={formData.password}
-                      onChange={e => {
-                        setFormData({ ...formData, password: e.target.value });
-                        if (errors.password) setErrors({...errors, password: ''});
-                      }}
-                      className={`w-full bg-gray-50 dark:bg-gray-900 border rounded-2xl px-4 py-3.5 text-sm font-semibold outline-none transition-all dark:text-white ${errors.password ? 'border-red-500 ring-4 ring-red-500/10' : 'border-gray-100 dark:border-gray-800 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10'}`}
-                      placeholder="••••••••"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Confirm Password</label>
-                    <input 
-                      type="password" 
-                      value={formData.confirmPassword}
-                      onChange={e => {
-                        setFormData({ ...formData, confirmPassword: e.target.value });
-                        if (errors.confirmPassword) setErrors({...errors, confirmPassword: ''});
-                      }}
-                      className={`w-full bg-gray-50 dark:bg-gray-900 border rounded-2xl px-4 py-3.5 text-sm font-semibold outline-none transition-all dark:text-white ${errors.confirmPassword ? 'border-red-500 ring-4 ring-red-500/10' : 'border-gray-100 dark:border-gray-800 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10'}`}
-                      placeholder="••••••••"
-                    />
-                  </div>
-                </>
-              )}
+              {/* MED-4 FIX: Password fields for both create and edit */}
+              <div>
+                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">
+                  {user ? 'New Password (optional)' : 'Password'}
+                </label>
+                <input 
+                  type="password" 
+                  value={formData.password}
+                  onChange={e => {
+                    setFormData({ ...formData, password: e.target.value });
+                    if (errors.password) setErrors({...errors, password: ''});
+                  }}
+                  className={`w-full bg-gray-50 dark:bg-gray-900 border rounded-2xl px-4 py-3.5 text-sm font-semibold outline-none transition-all dark:text-white ${errors.password ? 'border-red-500 ring-4 ring-red-500/10' : 'border-gray-100 dark:border-gray-800 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10'}`}
+                  placeholder={user ? 'Leave blank to keep current' : '••••••••'}
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Confirm Password</label>
+                <input 
+                  type="password" 
+                  value={formData.confirmPassword}
+                  onChange={e => {
+                    setFormData({ ...formData, confirmPassword: e.target.value });
+                    if (errors.confirmPassword) setErrors({...errors, confirmPassword: ''});
+                  }}
+                  className={`w-full bg-gray-50 dark:bg-gray-900 border rounded-2xl px-4 py-3.5 text-sm font-semibold outline-none transition-all dark:text-white ${errors.confirmPassword ? 'border-red-500 ring-4 ring-red-500/10' : 'border-gray-100 dark:border-gray-800 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10'}`}
+                  placeholder={user ? 'Leave blank to keep current' : '••••••••'}
+                />
+              </div>
 
               <div className="md:col-span-2">
                 <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Assign Role</label>
                 <select 
                   value={formData.role}
                   onChange={e => setFormData({ ...formData, role: e.target.value as UserRole })}
-                  className="w-full bg-gray-50 dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl px-4 py-3.5 text-sm font-bold outline-none focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 dark:text-white"
+                  disabled={isEditingSelf}
+                  className={`w-full bg-gray-50 dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl px-4 py-3.5 text-sm font-bold outline-none focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10 dark:text-white ${isEditingSelf ? 'opacity-60 cursor-not-allowed' : ''}`}
                 >
                   <option value={UserRole.USER}>Standard User (Contacts & API Access)</option>
                   <option value={UserRole.ADMIN}>Administrator (Full Management Access)</option>
                 </select>
+                {/* LOW-2 FIX: Role change warning */}
+                {isEditingSelf && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-2 font-medium">
+                    You cannot change your own role.
+                  </p>
+                )}
+                {!isEditingSelf && user && formData.role !== user.role && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-2 font-medium">
+                    ⚠️ Warning: Changing role will {formData.role === UserRole.ADMIN ? 'grant admin' : 'revoke admin'} access.
+                  </p>
+                )}
               </div>
             </div>
           </div>

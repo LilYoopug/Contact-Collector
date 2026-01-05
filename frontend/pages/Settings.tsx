@@ -48,14 +48,14 @@ const Settings: React.FC<SettingsProps> = ({ user, theme, setTheme, lang, setLan
           <div className="flex flex-col md:flex-row md:items-center gap-8">
             <div className="w-24 h-24 rounded-[2rem] flex items-center justify-center text-3xl font-black shrink-0 bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400 overflow-hidden shadow-inner border border-primary-100/50 dark:border-primary-800/50">
               {user.avatarUrl ? (
-                <img src={user.avatarUrl} alt={user.fullName} className="w-full h-full object-cover" />
+                <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
               ) : (
-                getInitials(user.fullName)
+                getInitials(user.name)
               )}
             </div>
             <div className="flex-1 space-y-2">
               <div className="flex items-center gap-3">
-                <h4 className="text-2xl font-black text-gray-900 dark:text-white tracking-tight">{user.fullName}</h4>
+                <h4 className="text-2xl font-black text-gray-900 dark:text-white tracking-tight">{user.name}</h4>
                 <span className={`px-2.5 py-1 rounded-xl text-[10px] font-black uppercase tracking-widest border ${user.role === UserRole.ADMIN ? 'bg-primary-100 text-primary-600 border-primary-200 dark:bg-primary-900/30 dark:border-primary-800' : 'bg-blue-100 text-blue-600 border-blue-200 dark:bg-blue-900/30 dark:border-blue-800'}`}>
                   {t(`role_${user.role}`)}
                 </span>

@@ -19,14 +19,44 @@ export enum UserRole {
 
 export interface User {
   id: string;
-  fullName: string;
+  name: string;
   email: string;
-  phone: string;
+  phone: string | null;
   role: UserRole;
-  joinedAt: Date;
+  avatarUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastLoginAt: string | null;
+  // Optional fields for admin views
   totalContacts?: number;
+  isActive?: boolean;
+}
+
+// For creating new users (admin)
+export interface CreateUserData {
+  name: string;
+  email: string;
+  password: string;
+  role: UserRole;
+  phone?: string;
+}
+
+// For updating users (admin)
+export interface UpdateUserData {
+  name?: string;
+  email?: string;
   password?: string;
-  avatarUrl?: string;
+  role?: UserRole;
+  phone?: string;
+  isActive?: boolean;
+}
+
+// Admin dashboard statistics
+export interface DashboardStats {
+  totalUsers: number;
+  activeUsersThisMonth: number;
+  totalContacts: number;
+  contactsThisWeek: number;
 }
 
 export interface Contact {
