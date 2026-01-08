@@ -130,7 +130,7 @@ function App() {
   }, [t]);
 
   // Fetch contacts function - can be called with search/filter params
-  const fetchContacts = useCallback(async (params?: { search?: string; dateFrom?: string; dateTo?: string }) => {
+  const fetchContacts = useCallback(async (params?: { search?: string; source?: string; dateFrom?: string; dateTo?: string }) => {
     if (!currentUser) return;
     
     setLoadingContacts(true);
@@ -139,6 +139,7 @@ function App() {
     try {
       const response = await contactService.getAll({
         search: params?.search,
+        source: params?.source,
         dateFrom: params?.dateFrom,
         dateTo: params?.dateTo,
       });

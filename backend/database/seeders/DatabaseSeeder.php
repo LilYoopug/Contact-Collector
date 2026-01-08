@@ -22,6 +22,7 @@ class DatabaseSeeder extends Seeder
             'role' => 'admin',
             'phone' => '+628123456789',
             'last_login_at' => now(),
+            'created_at' => now()->subDays(90),
         ]);
 
         // Create Regular User
@@ -32,6 +33,7 @@ class DatabaseSeeder extends Seeder
             'role' => 'user',
             'phone' => '+628987654321',
             'last_login_at' => now()->subDays(1),
+            'created_at' => now()->subDays(60),
         ]);
 
         // Create another Regular User
@@ -42,9 +44,23 @@ class DatabaseSeeder extends Seeder
             'role' => 'user',
             'phone' => '+628555555555',
             'last_login_at' => now()->subDays(3),
+            'created_at' => now()->subDays(45),
         ]);
 
-        // Create sample contacts for John Doe
+        // ========================================
+        // Generate 50 more random users with factories
+        // ========================================
+        $this->command->info('Creating 50 random users...');
+        
+        $randomUsers = User::factory()
+            ->count(50)
+            ->create();
+
+        // ========================================
+        // Create sample contacts for known users
+        // ========================================
+        
+        // John's original contacts (kept for consistency)
         $contacts = [
             [
                 'full_name' => 'Budi Santoso',
@@ -152,7 +168,16 @@ class DatabaseSeeder extends Seeder
             ]);
         }
 
-        // Create a few contacts for Jane Smith
+        // Add 40 more contacts for John using factory
+        $this->command->info('Creating 40 more contacts for John...');
+        Contact::factory()
+            ->count(40)
+            ->create([
+                'user_id' => $user->id,
+                'created_at' => fn() => fake()->dateTimeBetween('-30 days', 'now'),
+            ]);
+
+        // Create a few contacts for Jane Smith (original)
         $janeContacts = [
             [
                 'full_name' => 'Robert Brown',
@@ -197,15 +222,66 @@ class DatabaseSeeder extends Seeder
             ]);
         }
 
-        $this->command->info('Database seeded successfully!');
+        // Add 25 more contacts for Jane using factory
+        $this->command->info('Creating 25 more contacts for Jane...');
+        Contact::factory()
+            ->count(25)
+            ->create([
+                'user_id' => $user2->id,
+                'created_at' => fn() => fake()->dateTimeBetween('-20 days', 'now'),
+            ]);
+
+        // ========================================
+        // Create contacts for all 50 random users
+        // Each user gets 5-30 random contacts
+        // ========================================
+        $this->command->info('Creating contacts for 50 random users (5-30 each)...');
+        
+        $totalRandomContacts = 0;
+        foreach ($randomUsers as $randomUser) {
+            $contactCount = rand(5, 30);
+            $totalRandomContacts += $contactCount;
+            
+            Contact::factory()
+                ->count($contactCount)
+                ->create([
+                    'user_id' => $randomUser->id,
+                    'created_at' => fn() => fake()->dateTimeBetween('-45 days', 'now'),
+                ]);
+        }
+
+        // ========================================
+        // Summary
+        // ========================================
+        $totalUsers = User::count();
+        $totalContacts = Contact::count();
+
         $this->command->info('');
-        $this->command->info('Sample accounts created:');
-        $this->command->info('┌────────────────────────────┬─────────────────────────┬──────────────┐');
-        $this->command->info('│ Role                       │ Email                   │ Password     │');
-        $this->command->info('├────────────────────────────┼─────────────────────────┼──────────────┤');
-        $this->command->info('│ Admin                      │ admin@collector.com     │ password123  │');
-        $this->command->info('│ User (10 contacts)         │ john@example.com        │ password123  │');
-        $this->command->info('│ User (3 contacts)          │ jane@example.com        │ password123  │');
-        $this->command->info('└────────────────────────────┴─────────────────────────┴──────────────┘');
+        $this->command->info('═══════════════════════════════════════════════════════════════');
+        $this->command->info('  DATABASE SEEDED SUCCESSFULLY!');
+        $this->command->info('═══════════════════════════════════════════════════════════════');
+        $this->command->info('');
+        $this->command->info("  Total Users Created:    {$totalUsers}");
+        $this->command->info("  Total Contacts Created: {$totalContacts}");
+        $this->command->info('');
+        $this->command->info('  Breakdown:');
+        $this->command->info('  ───────────────────────────────────────────────────────────────');
+        $this->command->info('  • 1 Admin user');
+        $this->command->info('  • 2 Known test users (John + Jane)');
+        $this->command->info('  • 50 Random factory-generated users');
+        $this->command->info("  • ~{$totalRandomContacts} contacts for random users (5-30 each)");
+        $this->command->info('  • 50 contacts for John Doe');
+        $this->command->info('  • 28 contacts for Jane Smith');
+        $this->command->info('');
+        $this->command->info('  Sample accounts:');
+        $this->command->info('  ┌────────────────────────────┬─────────────────────────┬──────────────┐');
+        $this->command->info('  │ Role                       │ Email                   │ Password     │');
+        $this->command->info('  ├────────────────────────────┼─────────────────────────┼──────────────┤');
+        $this->command->info('  │ Admin                      │ admin@collector.com     │ password123  │');
+        $this->command->info('  │ User                       │ john@example.com        │ password123  │');
+        $this->command->info('  │ User                       │ jane@example.com        │ password123  │');
+        $this->command->info('  │ 50 Random Users            │ (factory generated)     │ password     │');
+        $this->command->info('  └────────────────────────────┴─────────────────────────┴──────────────┘');
+        $this->command->info('');
     }
 }

@@ -3,11 +3,13 @@ import React, { useState, useCallback, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { processAttendanceList } from '../services/geminiService';
 import { contactService, BatchCreateResult } from '../services/contactService';
+import { apiKeyService, type ApiKey } from '../services/apiKeyService';
+import { getPublicEndpointDisplay } from '../constants';
 import { Contact, OcrResultRow, Source, ConsentStatus } from '../types';
 import { useAppUI } from '../App';
 import { 
   UploadIcon, SpinnerIcon, ManualIcon, DatabaseIcon, 
-  CodeIcon, CopyIcon, DownloadIcon, TrashIcon 
+  CodeIcon, CopyIcon, DownloadIcon, TrashIcon, KeyIcon, BookOpenIcon, CheckIcon, PlusIcon
 } from './icons';
 
 interface AddContactModalProps {
@@ -341,6 +343,12 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
   const [importStatus, setImportStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
   const [importError, setImportError] = useState<string | null>(null);
 
+  // Webform tab state
+  const [webformApiKeys, setWebformApiKeys] = useState<ApiKey[]>([]);
+  const [webformKeysLoading, setWebformKeysLoading] = useState(false);
+  const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
+  const [copiedEndpoint, setCopiedEndpoint] = useState(false);
+
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') handleClose();
@@ -348,6 +356,24 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
     window.addEventListener('keydown', handleEsc);
     return () => window.removeEventListener('keydown', handleEsc);
   }, []);
+
+  // Load API keys when webform tab is active
+  useEffect(() => {
+    if (activeTab === 'webform' && isOpen) {
+      const loadKeys = async () => {
+        setWebformKeysLoading(true);
+        try {
+          const keys = await apiKeyService.getAll();
+          setWebformApiKeys(keys);
+        } catch (err) {
+          // Silently fail - user can still go to full API page
+        } finally {
+          setWebformKeysLoading(false);
+        }
+      };
+      loadKeys();
+    }
+  }, [activeTab, isOpen]);
 
   const handleClose = () => {
     setOcrStep('upload');
@@ -1303,18 +1329,166 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
                 </div>
               </div>
             ) : (
-                <div className="space-y-8 animate-in fade-in duration-300 max-w-2xl mx-auto">
-                    <div className="p-8 bg-primary-50/30 dark:bg-primary-900/10 border border-primary-100/50 dark:border-primary-900/20 rounded-[2.5rem]">
-                        <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed font-medium">{t('webFormDesc')}</p>
-                    </div>
-                    <div className="space-y-6">
-                        <div className="p-8 bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-[2.5rem] shadow-sm">
-                            <label className="block text-[10px] font-black text-gray-400 uppercase mb-4 tracking-[0.2em]">{t('webFormEndpoint')}</label>
-                            <div className="flex items-center justify-between gap-4 bg-gray-50 dark:bg-gray-800/50 p-4 rounded-2xl border border-gray-100 dark:border-gray-700">
-                                <code className="text-sm text-primary-600 dark:text-primary-400 truncate font-mono font-bold">https://api.cc.io/v1/webhook/user_99</code>
-                                <button onClick={() => { navigator.clipboard.writeText('https://api.cc.io/v1/webhook/user_99'); showToast('Endpoint copied', 'success'); }} className="p-2.5 hover:bg-white dark:hover:bg-gray-700 rounded-xl transition-all text-gray-400 hover:text-primary-600 shadow-sm"><CopyIcon className="h-5 w-5" /></button>
+                <div className="space-y-6 animate-in fade-in duration-300">
+                    {/* Header Description */}
+                    <div className="p-6 bg-primary-50/30 dark:bg-primary-900/10 border border-primary-100/50 dark:border-primary-900/20 rounded-2xl">
+                        <div className="flex items-start gap-4">
+                            <div className="w-12 h-12 bg-primary-100 dark:bg-primary-900/30 rounded-xl flex items-center justify-center shrink-0">
+                                <CodeIcon className="w-6 h-6 text-primary-600" />
+                            </div>
+                            <div>
+                                <h4 className="text-lg font-bold text-gray-900 dark:text-white mb-1">{t('apiIntegration') || 'API Integration'}</h4>
+                                <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">{t('webFormDesc')}</p>
                             </div>
                         </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        {/* API Keys Section */}
+                        <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl p-6 shadow-sm">
+                            <div className="flex items-center justify-between mb-4">
+                                <div className="flex items-center gap-2">
+                                    <KeyIcon className="w-5 h-5 text-primary-600" />
+                                    <h5 className="text-sm font-bold text-gray-900 dark:text-white">{t('apiKeys') || 'API Keys'}</h5>
+                                </div>
+                                <span className="text-xs text-gray-400 font-medium">{webformApiKeys.length}/5</span>
+                            </div>
+
+                            {webformKeysLoading ? (
+                                <div className="flex items-center justify-center py-8">
+                                    <SpinnerIcon className="w-6 h-6 text-primary-600 animate-spin" />
+                                </div>
+                            ) : webformApiKeys.length === 0 ? (
+                                <div className="text-center py-6">
+                                    <div className="w-12 h-12 bg-gray-100 dark:bg-gray-800 rounded-xl mx-auto mb-3 flex items-center justify-center">
+                                        <KeyIcon className="w-6 h-6 text-gray-400" />
+                                    </div>
+                                    <p className="text-sm text-gray-500 mb-4">{t('noApiKeys') || 'No API keys yet'}</p>
+                                    <button
+                                        onClick={() => { handleClose(); if (onGoToApi) onGoToApi(); }}
+                                        className="inline-flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-xl text-xs font-bold hover:bg-primary-700 transition-colors"
+                                    >
+                                        <PlusIcon className="w-4 h-4" />
+                                        {t('generateFirstKey') || 'Generate Key'}
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="space-y-3">
+                                    {webformApiKeys.slice(0, 3).map((key) => (
+                                        <div key={key.id} className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl border border-gray-100 dark:border-gray-700">
+                                            <div className="flex items-center gap-3 min-w-0">
+                                                <div className="w-2 h-2 rounded-full shrink-0 bg-green-500" />
+                                                <div className="min-w-0">
+                                                    <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{key.name}</p>
+                                                    <p className="text-xs text-gray-400 font-mono">{key.maskedKey}</p>
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={async () => {
+                                                    try {
+                                                        await navigator.clipboard.writeText(key.maskedKey);
+                                                        setCopiedKeyId(key.id);
+                                                        showToast(t('copied') || 'Copied!', 'success');
+                                                        setTimeout(() => setCopiedKeyId(null), 2000);
+                                                    } catch {
+                                                        showToast(t('copyFailed') || 'Copy failed', 'error');
+                                                    }
+                                                }}
+                                                className="p-2 text-gray-400 hover:text-primary-600 hover:bg-white dark:hover:bg-gray-700 rounded-lg transition-all"
+                                            >
+                                                {copiedKeyId === key.id ? (
+                                                    <CheckIcon className="w-4 h-4 text-green-500" />
+                                                ) : (
+                                                    <CopyIcon className="w-4 h-4" />
+                                                )}
+                                            </button>
+                                        </div>
+                                    ))}
+                                    {webformApiKeys.length > 3 && (
+                                        <p className="text-xs text-gray-400 text-center pt-1">+{webformApiKeys.length - 3} {t('more') || 'more'}</p>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Endpoint Info */}
+                        <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl p-6 shadow-sm">
+                            <div className="flex items-center gap-2 mb-4">
+                                <BookOpenIcon className="w-5 h-5 text-primary-600" />
+                                <h5 className="text-sm font-bold text-gray-900 dark:text-white">{t('quickStart') || 'Quick Start'}</h5>
+                            </div>
+
+                            <div className="space-y-4">
+                                {/* Endpoint */}
+                                <div>
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <span className="px-2 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 text-[10px] font-bold rounded">POST</span>
+                                        <span className="text-xs text-gray-500">{t('submitContact') || 'Submit Contact'}</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <div className="flex-1 bg-gray-50 dark:bg-gray-800/50 p-3 rounded-xl border border-gray-100 dark:border-gray-700 overflow-hidden">
+                                            <code className="text-xs text-gray-800 dark:text-gray-200 font-mono break-all">{getPublicEndpointDisplay()}</code>
+                                        </div>
+                                        <button
+                                            onClick={async () => {
+                                                try {
+                                                    await navigator.clipboard.writeText(getPublicEndpointDisplay());
+                                                    setCopiedEndpoint(true);
+                                                    showToast(t('copied') || 'Copied!', 'success');
+                                                    setTimeout(() => setCopiedEndpoint(false), 2000);
+                                                } catch {
+                                                    showToast(t('copyFailed') || 'Copy failed', 'error');
+                                                }
+                                            }}
+                                            className="p-2.5 text-gray-400 hover:text-primary-600 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl transition-all shrink-0"
+                                            title={t('copyEndpoint') || 'Copy endpoint'}
+                                        >
+                                            {copiedEndpoint ? (
+                                                <CheckIcon className="w-4 h-4 text-green-500" />
+                                            ) : (
+                                                <CopyIcon className="w-4 h-4" />
+                                            )}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Header */}
+                                <div>
+                                    <p className="text-xs text-gray-500 mb-2">{t('authentication') || 'Authentication'}</p>
+                                    <div className="bg-gray-900 dark:bg-gray-950 p-3 rounded-xl">
+                                        <code className="text-xs text-gray-300 font-mono">
+                                            <span className="text-gray-500">X-API-Key:</span>{' '}
+                                            <span className="text-primary-400">cc_live_your_key</span>
+                                        </code>
+                                    </div>
+                                </div>
+
+                                {/* Required Fields */}
+                                <div>
+                                    <p className="text-xs text-gray-500 mb-2">{t('requiredFields') || 'Required Fields'}</p>
+                                    <div className="flex flex-wrap gap-2">
+                                        <span className="px-2 py-1 bg-red-50 dark:bg-red-900/20 text-red-600 text-xs font-medium rounded">fullName*</span>
+                                        <span className="px-2 py-1 bg-red-50 dark:bg-red-900/20 text-red-600 text-xs font-medium rounded">phone*</span>
+                                        <span className="px-2 py-1 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 text-xs font-medium rounded">email</span>
+                                        <span className="px-2 py-1 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 text-xs font-medium rounded">company</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Footer with CTA */}
+                    <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-6 border-t border-gray-100 dark:border-gray-800">
+                        <p className="text-sm text-gray-500">
+                            {t('fullDocsHint') || 'View full documentation, manage keys, and see code examples.'}
+                        </p>
+                        <button
+                            onClick={() => { handleClose(); if (onGoToApi) onGoToApi(); }}
+                            className="flex items-center gap-2 px-6 py-3 bg-primary-600 text-white rounded-2xl font-bold text-sm hover:bg-primary-700 active:scale-95 transition-all shadow-lg shadow-primary-500/20"
+                        >
+                            <BookOpenIcon className="w-4 h-4" />
+                            {t('goToApiPage') || 'Go to API Settings'}
+                        </button>
                     </div>
                 </div>
             )}

@@ -29,6 +29,7 @@ export interface ContactListParams {
   page?: number;
   perPage?: number;
   search?: string;
+  source?: string;
   dateFrom?: string;
   dateTo?: string;
 }
@@ -122,6 +123,7 @@ export const contactService = {
     if (params?.page) queryParams.append('page', params.page.toString());
     if (params?.perPage) queryParams.append('per_page', params.perPage.toString());
     if (params?.search) queryParams.append('search', params.search);
+    if (params?.source && params.source !== 'all') queryParams.append('source', params.source);
     if (params?.dateFrom) queryParams.append('date_from', params.dateFrom);
     if (params?.dateTo) queryParams.append('date_to', params.dateTo);
     

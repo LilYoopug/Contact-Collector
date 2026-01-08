@@ -1,149 +1,271 @@
-# Laravel API Starter Template
+# Contact Collector - Backend
 
-Template ini adalah titik awal yang solid untuk membangun backend API menggunakan Laravel. Dilengkapi dengan fitur-fitur esensial yang sering dibutuhkan dalam pengembangan aplikasi modern, memungkinkan Anda untuk fokus pada logika bisnis inti.
+A Laravel 12 API backend for the Contact Collector application, providing authentication, contact management, and API key-based public endpoints.
 
-## ✨ Fitur Utama
+## 🚀 Tech Stack
 
-- **Otentikasi API**: Menggunakan **Laravel Sanctum** untuk otentikasi berbasis token yang aman dan stateless.
-  - Endpoint untuk Register, Login, Logout, Lupa Password, dan Reset Password.
-  - Proteksi Rate Limiting pada proses login.
-  - Proteksi **Google reCAPTCHA v2** pada endpoint login.
-- **Manajemen Pengguna & Peran**: Sistem peran (role) sederhana (`user` dan `admin`) dengan middleware untuk proteksi rute.
-- **Integrasi Pembayaran**: Terintegrasi dengan **Midtrans** untuk memproses pembayaran.
-  - Pembuatan transaksi dan mendapatkan `snap_token`.
-  - Penanganan notifikasi pembayaran melalui *Webhook*.
-  - Pengecekan status transaksi secara *real-time* melalui metode *Polling*.
-- **Contoh CRUD**: Endpoint CRUD lengkap untuk resource `Product` sebagai contoh implementasi.
-- **Struktur Proyek**: Organisasi file yang rapi dan mudah diperluas.
+- **PHP 8.2+** - Programming language
+- **Laravel 12** - PHP framework
+- **Laravel Sanctum** - API token authentication
+- **SQLite/MySQL** - Database (SQLite default)
+- **Scramble** - Automatic API documentation
+- **Midtrans** - Payment gateway integration
+- **PHPUnit** - Testing framework
 
-## 🚀 Memulai Proyek
+## 📋 Features
 
-### Prasyarat
-- PHP >= 8.2
+### Authentication & Authorization
+- 🔐 **User Authentication** - Register, login, logout with Sanctum tokens
+- 🔑 **Password Reset** - Email-based password recovery
+- 📧 **Email Verification** - Optional email verification
+- 👥 **Role-Based Access** - User and Admin roles
+- 🛡️ **Rate Limiting** - Protection against abuse
+
+### Contact Management
+- 📇 **Full CRUD** - Create, read, update, delete contacts
+- 📦 **Batch Operations** - Bulk create, update, delete (rate limited)
+- 🔍 **Search & Filter** - Search by name, filter by source, date range
+- 📊 **Pagination** - Efficient data loading
+
+### API Key System
+- 🔑 **Key Generation** - Create API keys for public endpoints
+- 🔄 **Key Regeneration** - Rotate API keys
+- 🗑️ **Key Revocation** - Delete compromised keys
+- 📊 **Usage Tracking** - Monitor API key usage
+
+### Admin Features
+- 👥 **User Management** - Full CRUD for user accounts
+- 📊 **Dashboard Stats** - System-wide statistics
+- 📈 **Analytics** - User activity and contact metrics
+
+## 📁 Project Structure
+
+```
+backend/
+├── app/
+│   ├── Http/
+│   │   ├── Controllers/
+│   │   │   ├── Api/
+│   │   │   │   ├── ApiKeyController.php
+│   │   │   │   ├── ContactController.php
+│   │   │   │   ├── PublicContactController.php
+│   │   │   │   ├── UserController.php
+│   │   │   │   └── Auth/
+│   │   │   │       └── AuthController.php
+│   │   │   └── Auth/              # Breeze auth controllers
+│   │   ├── Middleware/
+│   │   │   ├── ApiKeyAuth.php
+│   │   │   ├── EnsureEmailIsVerified.php
+│   │   │   └── RoleMiddleware.php
+│   │   ├── Requests/              # Form request validation
+│   │   └── Resources/             # API resources
+│   ├── Models/
+│   │   ├── ApiKey.php
+│   │   ├── Contact.php
+│   │   └── User.php
+│   └── Services/
+│       ├── DuplicateDetectionService.php
+│       └── PhoneNormalizationService.php
+├── config/                        # Configuration files
+├── database/
+│   ├── factories/                 # Model factories
+│   ├── migrations/                # Database migrations
+│   └── seeders/                   # Database seeders
+├── routes/
+│   ├── api.php                    # API routes
+│   ├── auth.php                   # Auth routes
+│   └── web.php                    # Web routes
+└── tests/
+    ├── Feature/                   # Feature tests
+    │   ├── Auth/
+    │   ├── Contact/
+    │   └── User/
+    └── Unit/                      # Unit tests
+```
+
+## 🛠️ Installation
+
+### Prerequisites
+- PHP 8.2+
 - Composer
-- Database (MySQL, PostgreSQL, dll.)
-- Akun Midtrans (untuk fitur pembayaran)
-- Kunci Google reCAPTCHA (untuk proteksi login)
+- SQLite or MySQL
 
-### Langkah Instalasi
+### Quick Setup
 
-1.  **Clone repository ini:**
-    ```bash
-    git clone https://github.com/username/repository-anda.git
-    cd repository-anda
-    ```
+```bash
+# Install dependencies and setup
+composer setup
+```
 
-2.  **Install dependensi PHP:**
-    ```bash
-    composer install
-    ```
+This runs:
+1. `composer install`
+2. Copy `.env.example` to `.env`
+3. Generate application key
+4. Run migrations
 
-3.  **Buat file `.env`:**
-    Salin file `.env.example` menjadi `.env`.
-    ```bash
-    cp .env.example .env
-    ```
+### Manual Setup
 
-4.  **Generate application key:**
-    ```bash
-    php artisan key:generate
-    ```
+1. **Install dependencies:**
+   ```bash
+   composer install
+   ```
 
-5.  **Konfigurasi file `.env`:**
-    Buka file `.env` dan sesuaikan variabel berikut:
-    - **Database:**
-      ```env
-      DB_CONNECTION=mysql
-      DB_HOST=127.0.0.1
-      DB_PORT=3306
-      DB_DATABASE=nama_database_anda
-      DB_USERNAME=user_database_anda
-      DB_PASSWORD=password_anda
-      ```
-    - **Midtrans:**
-      Dapatkan dari dashboard Midtrans Anda.
-      ```env
-      MIDTRANS_SERVER_KEY=SB-Mid-server-xxxxxxxxxxxxxxxxxxxx
-      MIDTRANS_IS_PRODUCTION=false
-      ```
-    - **Google reCAPTCHA:**
-      Dapatkan dari konsol Google reCAPTCHA.
-      ```env
-      RECAPTCHA_SITE_KEY=kunci_site_anda
-      RECAPTCHA_SECRET_KEY=kunci_rahasia_anda
-      ```
+2. **Environment configuration:**
+   ```bash
+   cp .env.example .env
+   php artisan key:generate
+   ```
 
-6.  **Jalankan migrasi database:**
-    Perintah ini akan membuat tabel-tabel yang dibutuhkan seperti `users`, `products`, dll.
-    ```bash
-    php artisan migrate
-    ```
+3. **Configure database:**
+   
+   Default is SQLite. For MySQL, update `.env`:
+   ```env
+   DB_CONNECTION=mysql
+   DB_HOST=127.0.0.1
+   DB_PORT=3306
+   DB_DATABASE=contact_collector
+   DB_USERNAME=root
+   DB_PASSWORD=
+   ```
 
-7.  **Jalankan server development:**
-    ```bash
-    php artisan serve
-    ```
-    Aplikasi Anda sekarang berjalan di `http://127.0.0.1:8000`.
+4. **Run migrations:**
+   ```bash
+   php artisan migrate
+   ```
 
-## 📖 Dokumentasi API
+5. **Start development server:**
+   ```bash
+   php artisan serve
+   ```
 
-Berikut adalah daftar endpoint API yang tersedia.
+### Development Mode (with hot reload)
 
-### Otentikasi
+```bash
+composer dev
+```
 
-*   `POST /api/register`
-    - Mendaftarkan pengguna baru.
-    - **Body**: `name`, `email`, `password`, `password_confirmation`.
-*   `POST /api/login`
-    - Login pengguna dan mendapatkan token.
-    - **Body**: `email`, `password`, `g-recaptcha-response`.
-*   `POST /api/logout`
-    - Logout pengguna dan menghapus token saat ini.
-    - **Memerlukan**: Header `Authorization: Bearer <token>`.
-*   `POST /api/forgot-password`
-    - Mengirim link reset password ke email pengguna.
-    - **Body**: `email`.
-*   `POST /api/reset-password`
-    - Mereset password pengguna dengan token yang valid.
-    - **Body**: `token`, `email`, `password`, `password_confirmation`.
+This starts:
+- Laravel server (`php artisan serve`)
+- Queue worker (`php artisan queue:listen`)
+- Log viewer (`php artisan pail`)
+- Vite dev server (`npm run dev`)
 
-### Pengguna
+## 🔧 Configuration
 
-*   `GET /api/user`
-    - Mendapatkan data pengguna yang sedang login.
-    - **Memerlukan**: Header `Authorization: Bearer <token>`.
+### Environment Variables
 
-### Pembayaran (Midtrans)
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `APP_URL` | Application URL | `http://localhost` |
+| `FRONTEND_URL` | Frontend URL (CORS) | - |
+| `DB_CONNECTION` | Database driver | `sqlite` |
+| `RECAPTCHA_ENABLED` | Enable reCAPTCHA | `true` |
+| `RECAPTCHA_SITE_KEY` | reCAPTCHA site key | - |
+| `RECAPTCHA_SECRET_KEY` | reCAPTCHA secret | - |
+| `MIDTRANS_*` | Payment gateway config | - |
 
-*   `POST /api/payment/create-transaction`
-    - Membuat transaksi baru dan mendapatkan `snap_token` dari Midtrans.
-    - **Memerlukan**: Header `Authorization: Bearer <token>`.
-    - **Body**: `order_id` (unik), `amount`.
-*   `GET /api/payment/status/{order_id}`
-    - Memeriksa status transaksi secara real-time (polling).
-    - **Memerlukan**: Header `Authorization: Bearer <token>`.
-*   `POST /api/payment/notification`
-    - Endpoint **Webhook** untuk menerima notifikasi status dari Midtrans. Endpoint ini tidak memerlukan otentikasi dan harus diatur di dashboard Midtrans Anda.
+### CORS Configuration
 
-### Produk (Contoh CRUD)
+Update `config/cors.php` or set `FRONTEND_URL` in `.env`:
+```env
+FRONTEND_URL=http://localhost:5173
+```
 
-*   `GET /api/products`
-    - Menampilkan daftar produk dengan paginasi.
-*   `POST /api/products`
-    - Membuat produk baru.
-    - **Body**: `name`, `description` (opsional), `price`.
-*   `GET /api/products/{product}`
-    - Menampilkan detail satu produk.
-*   `PUT/PATCH /api/products/{product}`
-    - Memperbarui data produk.
-*   `DELETE /api/products/{product}`
-    - Menghapus produk.
+## 📡 API Endpoints
 
-> **Catatan**: Endpoint produk di atas belum diproteksi. Untuk membatasi akses (misalnya hanya untuk admin), pindahkan rute-rute tersebut ke dalam grup middleware `role:admin` di `routes/api.php`.
+### Authentication
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/register` | Register new user |
+| POST | `/api/login` | Login user |
+| POST | `/api/logout` | Logout user (auth required) |
+| POST | `/api/forgot-password` | Request password reset |
+| POST | `/api/reset-password` | Reset password |
 
-### Rute Admin
+### User (Authenticated)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/user` | Get current user |
+| POST | `/api/user/avatar` | Upload avatar |
 
-*   `GET /api/admin/dashboard`
-    - Contoh endpoint yang hanya bisa diakses oleh pengguna dengan peran `admin`.
-    - **Memerlukan**: Header `Authorization: Bearer <token>` dari user admin.
+### Contacts (Authenticated)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/contacts` | List contacts (with filters) |
+| POST | `/api/contacts` | Create contact |
+| GET | `/api/contacts/{id}` | Get contact |
+| PUT | `/api/contacts/{id}` | Update contact |
+| DELETE | `/api/contacts/{id}` | Delete contact |
+| POST | `/api/contacts/batch` | Batch create |
+| PATCH | `/api/contacts/batch` | Batch update |
+| DELETE | `/api/contacts/batch` | Batch delete |
 
+### API Keys (Authenticated)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/api-keys` | List API keys |
+| POST | `/api/api-keys` | Create API key |
+| POST | `/api/api-keys/{id}/regenerate` | Regenerate key |
+| DELETE | `/api/api-keys/{id}` | Delete key |
+
+### Admin (Admin Role Required)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/users` | List all users |
+| POST | `/api/users` | Create user |
+| GET | `/api/users/{id}` | Get user |
+| PUT | `/api/users/{id}` | Update user |
+| DELETE | `/api/users/{id}` | Delete user |
+| GET | `/api/dashboard/stats` | Dashboard statistics |
+
+### Public API (API Key Required)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/public/contacts` | Submit contact (form submission) |
+
+## 🔒 Rate Limiting
+
+| Endpoint Type | Limit |
+|--------------|-------|
+| Batch operations | 10 requests/minute/user |
+| Public API | 100 requests/minute/API key |
+| General API | Standard Laravel limits |
+
+## 🧪 Testing
+
+```bash
+# Run all tests
+composer test
+
+# Run specific test
+php artisan test --filter=ContactTest
+
+# Run with coverage
+php artisan test --coverage
+```
+
+## 📚 API Documentation
+
+API documentation is auto-generated by Scramble:
+```
+GET /docs/api
+```
+
+## 📝 Scripts
+
+| Command | Description |
+|---------|-------------|
+| `composer setup` | Full initial setup |
+| `composer dev` | Start dev environment |
+| `composer test` | Run tests |
+| `php artisan migrate` | Run migrations |
+| `php artisan db:seed` | Seed database |
+
+## 🔗 Related
+
+- [Frontend README](../frontend/README.md) - React SPA documentation
+- [Main README](../README.md) - Project overview
+
+## 📄 License
+
+MIT License

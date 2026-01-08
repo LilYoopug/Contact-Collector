@@ -4,6 +4,7 @@ import { SettingsIcon, UsersIcon, MoonIcon, SunIcon, UploadIcon, SpinnerIcon } f
 import { Language } from '../i18n';
 import { User, UserRole } from '../types';
 import { useAppUI } from '../App';
+import { avatarService } from '../services/avatarService';
 
 interface SettingsProps {
   user: User;
@@ -170,15 +171,12 @@ const Settings: React.FC<SettingsProps> = ({ user, theme, setTheme, lang, setLan
         <AvatarModal 
           currentAvatar={user.avatarUrl}
           onClose={() => setIsAvatarModalOpen(false)}
-          onSave={(avatarUrl) => {
-            setGlobalLoading(true);
-            setTimeout(() => {
-              onUpdateUser({ ...user, avatarUrl });
-              setIsAvatarModalOpen(false);
-              setGlobalLoading(false);
-            }, 1000);
+          onSave={(updatedUser) => {
+            // Story 8.2 AC#3: Update user state with new avatarUrl from API response
+            onUpdateUser(updatedUser);
           }}
           t={t}
+          showToast={showToast}
         />
       )}
     </div>
@@ -188,18 +186,26 @@ const Settings: React.FC<SettingsProps> = ({ user, theme, setTheme, lang, setLan
 interface AvatarModalProps {
   currentAvatar?: string;
   onClose: () => void;
-  onSave: (avatarUrl: string) => void;
+  onSave: (updatedUser: User) => void;
   t: (key: string) => string;
+  showToast: (message: string, type: 'success' | 'error' | 'info') => void;
 }
 
-const AvatarModal: React.FC<AvatarModalProps> = ({ currentAvatar, onClose, onSave, t }) => {
+/**
+ * Story 8.2: Avatar Display in Profile
+ * Updated AvatarModal to use the actual API for avatar upload
+ */
+const AvatarModal: React.FC<AvatarModalProps> = ({ currentAvatar, onClose, onSave, t, showToast }) => {
   const [preview, setPreview] = useState<string | undefined>(currentAvatar);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null); // Track actual file for upload
   const [isUploading, setIsUploading] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      setSelectedFile(file); // Store file for API upload
       setIsUploading(true);
       const reader = new FileReader();
       reader.onloadend = () => {
@@ -207,6 +213,24 @@ const AvatarModal: React.FC<AvatarModalProps> = ({ currentAvatar, onClose, onSav
         setIsUploading(false);
       };
       reader.readAsDataURL(file);
+    }
+  };
+
+  // Story 8.2 AC#3: Call POST /api/user/avatar and handle response
+  const handleSaveAvatar = async () => {
+    if (!selectedFile) return;
+
+    setIsSubmitting(true);
+    try {
+      const updatedUser = await avatarService.uploadAvatar(selectedFile);
+      onSave(updatedUser);
+      onClose();
+      showToast('Avatar updated successfully', 'success');
+    } catch (error: any) {
+      // Story 8.2 AC#4: Show error toast on failure
+      showToast(error.message || 'Failed to upload avatar', 'error');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -219,7 +243,7 @@ const AvatarModal: React.FC<AvatarModalProps> = ({ currentAvatar, onClose, onSav
           
           <div className="flex justify-center">
             <div className="w-40 h-40 rounded-[2.5rem] bg-gray-50 dark:bg-gray-800 border-4 border-white dark:border-gray-700 shadow-2xl overflow-hidden relative group">
-              {isUploading ? (
+              {(isUploading || isSubmitting) ? (
                 <div className="absolute inset-0 flex items-center justify-center bg-gray-100/50 dark:bg-gray-800/50">
                   <SpinnerIcon className="w-10 h-10 text-primary-600 animate-spin" />
                 </div>
@@ -232,7 +256,8 @@ const AvatarModal: React.FC<AvatarModalProps> = ({ currentAvatar, onClose, onSav
               )}
               <button 
                 onClick={() => fileInputRef.current?.click()}
-                className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"
+                disabled={isSubmitting}
+                className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity disabled:cursor-not-allowed"
               >
                 <div className="bg-white/20 backdrop-blur-md p-4 rounded-2xl">
                     <UploadIcon className="w-8 h-8 text-white" />
@@ -245,25 +270,27 @@ const AvatarModal: React.FC<AvatarModalProps> = ({ currentAvatar, onClose, onSav
             type="file" 
             ref={fileInputRef} 
             className="hidden" 
-            accept="image/*" 
+            accept="image/jpeg,image/png,image/jpg" 
             onChange={handleFileChange} 
           />
 
-          <p className="text-xs font-medium text-gray-500 max-w-[240px] mx-auto leading-relaxed">Choose a square high-resolution image to represent your professional profile.</p>
+          <p className="text-xs font-medium text-gray-500 max-w-[240px] mx-auto leading-relaxed">Choose a square high-resolution image (JPG or PNG, max 2MB) to represent your professional profile.</p>
 
           <div className="grid grid-cols-2 gap-4 pt-4">
             <button 
               onClick={onClose}
-              className="px-6 py-4 rounded-2xl font-black text-xs uppercase tracking-widest text-gray-500 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all border border-gray-100 dark:border-gray-800"
+              disabled={isSubmitting}
+              className="px-6 py-4 rounded-2xl font-black text-xs uppercase tracking-widest text-gray-500 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all border border-gray-100 dark:border-gray-800 disabled:opacity-50"
             >
               Cancel
             </button>
             <button 
-              onClick={() => preview && onSave(preview)}
-              disabled={!preview || isUploading}
-              className="px-6 py-4 rounded-2xl font-black text-xs uppercase tracking-widest text-white bg-primary-600 hover:bg-primary-700 disabled:opacity-50 transition-all shadow-xl shadow-primary-500/20"
+              onClick={handleSaveAvatar}
+              disabled={!selectedFile || isUploading || isSubmitting}
+              className="px-6 py-4 rounded-2xl font-black text-xs uppercase tracking-widest text-white bg-primary-600 hover:bg-primary-700 disabled:opacity-50 transition-all shadow-xl shadow-primary-500/20 flex items-center justify-center gap-2"
             >
-              Save Avatar
+              {isSubmitting && <SpinnerIcon className="w-4 h-4 animate-spin" />}
+              {isSubmitting ? 'Uploading...' : 'Save Avatar'}
             </button>
           </div>
         </div>

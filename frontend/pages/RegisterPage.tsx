@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { LayoutIcon } from '../components/icons';
+import PasswordInput from '../components/PasswordInput';
 import authService, { AuthError } from '../services/authService';
 
 interface RegisterPageProps {
@@ -166,14 +167,23 @@ const RegisterPage: React.FC<RegisterPageProps> = ({ onLogin, onRegister, onBack
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-2">{t('passwordLabel')}</label>
-                <input 
-                  name="password"
-                  type="password" 
-                  required 
+                {/* Story 8.3 & 8.6: Password visibility toggle using PasswordInput component */}
+                <PasswordInput
                   value={formData.password}
-                  onChange={handleInputChange}
-                  className={getInputClassName('password')}
-                  placeholder="••••••••"
+                  onChange={(value) => {
+                    setFormData(prev => ({ ...prev, password: value }));
+                    if (error) setError(null);
+                    if (fieldErrors.password) {
+                      setFieldErrors(prev => {
+                        const updated = { ...prev };
+                        delete updated.password;
+                        return updated;
+                      });
+                    }
+                  }}
+                  error={!!fieldErrors.password}
+                  required
+                  name="password"
                 />
                 {fieldErrors.password && (
                   <p className="mt-1 text-xs font-bold text-red-500">{fieldErrors.password}</p>
@@ -181,14 +191,16 @@ const RegisterPage: React.FC<RegisterPageProps> = ({ onLogin, onRegister, onBack
               </div>
               <div>
                 <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-2">{t('confirmPasswordLabel')}</label>
-                <input 
-                  name="confirmPassword"
-                  type="password" 
-                  required 
+                {/* Story 8.3 & 8.6: Password visibility toggle using PasswordInput component */}
+                <PasswordInput
                   value={formData.confirmPassword}
-                  onChange={handleInputChange}
-                  className={getInputClassName('confirmPassword')}
-                  placeholder="••••••••"
+                  onChange={(value) => {
+                    setFormData(prev => ({ ...prev, confirmPassword: value }));
+                    if (error) setError(null);
+                  }}
+                  error={!!fieldErrors.confirmPassword}
+                  required
+                  name="confirmPassword"
                 />
               </div>
             </div>

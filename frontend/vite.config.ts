@@ -8,6 +8,19 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 3000,
         host: '0.0.0.0',
+        // Story 9-2: Proxy /storage and /api requests to Laravel backend to avoid CORS issues
+        proxy: {
+          '/storage': {
+            target: 'http://localhost:8000',
+            changeOrigin: true,
+            secure: false,
+          },
+          '/api': {
+            target: 'http://localhost:8000',
+            changeOrigin: true,
+            secure: false,
+          },
+        },
       },
       plugins: [react()],
       define: {

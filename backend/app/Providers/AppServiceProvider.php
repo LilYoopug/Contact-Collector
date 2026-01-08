@@ -40,5 +40,20 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('batch', function (Request $request) {
             return Limit::perMinute(10)->by($request->user()?->id ?: $request->ip());
         });
+        
+        // Public API rate limiter: 100 requests per minute per API key (NFR13)
+        // Story 7.7: Must rate limit by API key, not by IP or user
+        RateLimiter::for('api-key', function (Request $request) {
+            // Get the API key from the request attributes (set by ApiKeyAuth middleware)
+            $apiKey = $request->attributes->get('api_key');
+            
+            if ($apiKey) {
+                // Rate limit by API key ID (100 requests per minute per key)
+                return Limit::perMinute(100)->by('api_key:' . $apiKey->id);
+            }
+            
+            // Fallback to IP if no API key (shouldn't happen with middleware)
+            return Limit::perMinute(100)->by($request->ip());
+        });
     }
 }

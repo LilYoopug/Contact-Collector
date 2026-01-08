@@ -10,6 +10,7 @@ use App\Http\Requests\Contact\StoreContactRequest;
 use App\Http\Requests\Contact\UpdateContactRequest;
 use App\Http\Resources\ContactResource;
 use App\Models\Contact;
+use App\Services\DuplicateDetectionService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -70,6 +71,11 @@ class ContactController extends Controller
             }
         }
         
+        // Source filter - Story 7.9
+        if ($request->filled('source') && $request->input('source') !== 'all') {
+            $query->where('source', $request->input('source'));
+        }
+        
         // Default ordering by created_at DESC
         $query->orderBy('created_at', 'desc');
         
@@ -93,11 +99,28 @@ class ContactController extends Controller
 
     /**
      * Store a newly created contact.
+     * Story 8-10: Uses DuplicateDetectionService for duplicate checking.
      */
-    public function store(StoreContactRequest $request): \Illuminate\Http\JsonResponse
+    public function store(StoreContactRequest $request, DuplicateDetectionService $duplicateService): \Illuminate\Http\JsonResponse
     {
+        $userId = auth()->id();
+
+        // Check for duplicates using the service
+        $existing = $duplicateService->findDuplicate(
+            $userId,
+            $request->phone,
+            $request->email
+        );
+
+        if ($existing) {
+            return response()->json([
+                'message' => 'Duplicate contact detected',
+                'existing' => new ContactResource($existing),
+            ], 409);
+        }
+
         $contact = Contact::create([
-            'user_id' => auth()->id(),
+            'user_id' => $userId,
             'full_name' => $request->full_name,
             'phone' => $request->phone,
             'email' => $request->email,

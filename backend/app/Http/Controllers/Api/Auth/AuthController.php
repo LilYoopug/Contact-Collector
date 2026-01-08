@@ -4,10 +4,13 @@ namespace App\Http\Controllers\Api\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\LoginRequest;
+use App\Http\Requests\User\StoreAvatarRequest;
+use App\Http\Resources\UserResource;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Password;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 use App\Models\User;
 use Illuminate\Auth\Events\Login;
@@ -21,12 +24,15 @@ class AuthController extends Controller
 
         $user = $request->user(); // ambil user yang berhasil login
 
+        // Story 8.9 FIX: Track last_login_at for active users metric
+        $user->update(['last_login_at' => now()]);
+
         // Buat token API Laravel Sanctum
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
             'token' => $token,
-            'user'  => $user,
+            'user'  => $user->fresh(),
         ]);
     }
 
@@ -103,5 +109,39 @@ class AuthController extends Controller
         }
 
         return response()->json(['message' => __($status)]);
+    }
+
+    /**
+     * Upload user avatar.
+     * 
+     * Story 8.1: Avatar Upload API Endpoint
+     * AC#1: Store file in storage/app/public/avatars/, update avatar_url, return updated user
+     * AC#4: Delete old avatar before saving new one
+     * AC#5: Return full URL accessible from browser
+     */
+    public function uploadAvatar(StoreAvatarRequest $request)
+    {
+        $user = $request->user();
+        $file = $request->file('avatar');
+
+        // AC#4: Delete old avatar if exists
+        if ($user->avatar_url) {
+            $oldPath = str_replace('/storage/', '', $user->avatar_url);
+            Storage::disk('public')->delete($oldPath);
+        }
+
+        // AC#1 & AC#5: Store with unique filename {user_id}_{timestamp}.{ext}
+        $extension = $file->getClientOriginalExtension();
+        $filename = $user->id . '_' . time() . '.' . $extension;
+        
+        $path = $file->storeAs('avatars', $filename, 'public');
+
+        // Update user's avatar_url with storage path
+        $user->update([
+            'avatar_url' => '/storage/' . $path,
+        ]);
+
+        // AC#1: Return updated user with new avatarUrl
+        return new UserResource($user->fresh());
     }
 }

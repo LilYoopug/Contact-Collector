@@ -23,7 +23,12 @@ class UserResource extends JsonResource
             'email' => $this->email,
             'phone' => $this->phone,
             'role' => $this->role,
+            // Story 9-2 FIX: Return relative path for Vite proxy to work
+            // In dev: Vite proxies /storage/* to backend
+            // In prod: Same-origin or configure web server for CORS
             'avatarUrl' => $this->avatar_url,
+            // Story 8.7 FIX: Include contact count for each user (BUG-001)
+            'totalContacts' => $this->contacts_count ?? 0,
             'createdAt' => $this->created_at?->toIso8601String(),
             'updatedAt' => $this->updated_at?->toIso8601String(),
             'lastLoginAt' => $this->last_login_at?->toIso8601String(),

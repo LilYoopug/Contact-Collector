@@ -17,7 +17,7 @@ interface DashboardProps {
   loadingContacts?: boolean;
   contactsError?: string | null;
   onRetryContacts?: () => void;
-  onFetchContacts?: (params?: { search?: string; dateFrom?: string; dateTo?: string }) => void;
+  onFetchContacts?: (params?: { search?: string; source?: string; dateFrom?: string; dateTo?: string }) => void;
   addOcrContacts: (newContacts: Omit<Contact, 'id' | 'createdAt'>[]) => void;
   onContactCreated?: (contact: Contact) => void;
   onContactUpdated?: (contact: Contact) => void;
@@ -170,17 +170,18 @@ const Dashboard: React.FC<DashboardProps> = ({
     }
   };
 
-  // Fetch contacts from API when search or date filter changes (Story 5.3, 5.4)
+  // Fetch contacts from API when search, source, or date filter changes (Story 5.3, 5.4, 7.9)
   useEffect(() => {
     if (onFetchContacts) {
       const dateParams = convertDateFilter(activeDateFilter);
       onFetchContacts({ 
         search: debouncedSearchQuery || undefined,
+        source: sourceFilter !== 'all' ? sourceFilter : undefined,
         dateFrom: dateParams.dateFrom,
         dateTo: dateParams.dateTo,
       });
     }
-  }, [debouncedSearchQuery, activeDateFilter, onFetchContacts]);
+  }, [debouncedSearchQuery, sourceFilter, activeDateFilter, onFetchContacts]);
 
   const handleSort = (key: ContactSortKey) => {
     let direction: 'asc' | 'desc' | null = 'asc';

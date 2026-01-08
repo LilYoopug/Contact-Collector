@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests\Contact;
 
+use App\Services\PhoneNormalizationService;
 use Illuminate\Foundation\Http\FormRequest;
 
 class StoreContactRequest extends FormRequest
@@ -12,6 +13,20 @@ class StoreContactRequest extends FormRequest
     public function authorize(): bool
     {
         return true; // Auth already checked by middleware
+    }
+
+    /**
+     * Prepare the data for validation.
+     * Story 8-11: Normalize phone number before validation.
+     */
+    protected function prepareForValidation(): void
+    {
+        if ($this->has('phone')) {
+            $normalizer = app(PhoneNormalizationService::class);
+            $this->merge([
+                'phone' => $normalizer->normalize($this->input('phone')),
+            ]);
+        }
     }
 
     /**

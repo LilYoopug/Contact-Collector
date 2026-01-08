@@ -59,4 +59,24 @@ class User extends Authenticatable
     {
         return $this->hasMany(\App\Models\Contact::class);
     }
+
+    /**
+     * Get the API keys for the user.
+     * 
+     * Story 7.1: API Key Model and Migration
+     */
+    public function apiKeys(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(\App\Models\ApiKey::class);
+    }
+
+    /**
+     * Get only active (non-revoked) API keys for the user.
+     * 
+     * Story 7.1: API Key Model and Migration
+     */
+    public function activeApiKeys(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->apiKeys()->whereNull('revoked_at');
+    }
 }

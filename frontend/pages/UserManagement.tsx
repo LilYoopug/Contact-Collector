@@ -2,6 +2,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { User, UserRole, DashboardStats } from '../types';
 import { DownloadIcon, SpinnerIcon, SortAscIcon, SortDescIcon, SortDefaultIcon } from '../components/icons';
+import PasswordInput from '../components/PasswordInput';
 import { useAppUI } from '../App';
 import { userService } from '../services/userService';
 import * as XLSX from 'xlsx';
@@ -876,33 +877,33 @@ const UserFormModal: React.FC<UserFormModalProps> = ({ user, currentUser, onClos
                 />
               </div>
 
-              {/* MED-4 FIX: Password fields for both create and edit */}
+              {/* MED-4 FIX: Password fields for both create and edit with visibility toggle */}
               <div>
                 <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">
                   {user ? 'New Password (optional)' : 'Password'}
                 </label>
-                <input 
-                  type="password" 
+                <PasswordInput
                   value={formData.password}
-                  onChange={e => {
-                    setFormData({ ...formData, password: e.target.value });
+                  onChange={(value) => {
+                    setFormData({ ...formData, password: value });
                     if (errors.password) setErrors({...errors, password: ''});
                   }}
-                  className={`w-full bg-gray-50 dark:bg-gray-900 border rounded-2xl px-4 py-3.5 text-sm font-semibold outline-none transition-all dark:text-white ${errors.password ? 'border-red-500 ring-4 ring-red-500/10' : 'border-gray-100 dark:border-gray-800 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10'}`}
                   placeholder={user ? 'Leave blank to keep current' : '••••••••'}
+                  error={!!errors.password}
+                  name="password"
                 />
               </div>
               <div>
                 <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Confirm Password</label>
-                <input 
-                  type="password" 
+                <PasswordInput
                   value={formData.confirmPassword}
-                  onChange={e => {
-                    setFormData({ ...formData, confirmPassword: e.target.value });
+                  onChange={(value) => {
+                    setFormData({ ...formData, confirmPassword: value });
                     if (errors.confirmPassword) setErrors({...errors, confirmPassword: ''});
                   }}
-                  className={`w-full bg-gray-50 dark:bg-gray-900 border rounded-2xl px-4 py-3.5 text-sm font-semibold outline-none transition-all dark:text-white ${errors.confirmPassword ? 'border-red-500 ring-4 ring-red-500/10' : 'border-gray-100 dark:border-gray-800 focus:border-primary-500 focus:ring-4 focus:ring-primary-500/10'}`}
                   placeholder={user ? 'Leave blank to keep current' : '••••••••'}
+                  error={!!errors.confirmPassword}
+                  name="confirmPassword"
                 />
               </div>
 

@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
 import { LayoutIcon, SpinnerIcon } from '../components/icons';
+import PasswordInput from '../components/PasswordInput';
 import authService from '../services/authService';
 
 interface LoginPageProps {
@@ -93,11 +94,6 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onRegister, onBack, t, s
           <div className="mb-8">
             <h2 className="text-3xl font-black text-gray-900 dark:text-white tracking-tight">{t('loginTitle')}</h2>
             <p className="mt-2 text-sm text-gray-500 font-medium">{t('loginSub')}</p>
-            <div className="mt-4 p-3 bg-primary-50 dark:bg-primary-900/20 rounded-xl border border-primary-100 dark:border-primary-800/50">
-               <p className="text-[10px] text-primary-600 dark:text-primary-400 font-bold uppercase tracking-widest leading-relaxed">
-                  Tip: use "admin@collector.com" for admin view
-               </p>
-            </div>
           </div>
 
           <form className="space-y-6" onSubmit={handleSubmit}>
@@ -119,17 +115,14 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onRegister, onBack, t, s
             </div>
             <div>
               <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-2">{t('passwordLabel')}</label>
-              <input 
-                type="password" 
+              {/* Story 8.4 & 8.6: Password visibility toggle using PasswordInput component */}
+              <PasswordInput
                 value={password}
-                onChange={(e) => {
-                  setPassword(e.target.value);
+                onChange={(value) => {
+                  setPassword(value);
                   if (errors.password) setErrors({ ...errors, password: undefined });
                 }}
-                className={`w-full bg-gray-50 dark:bg-gray-800 border rounded-2xl px-4 py-3.5 text-sm font-semibold text-gray-900 dark:text-white focus:ring-2 outline-none transition-all ${
-                  errors.password ? 'border-red-500 focus:ring-red-500/20' : 'border-gray-200 dark:border-gray-700 focus:ring-primary-500'
-                }`}
-                placeholder="••••••••"
+                error={!!errors.password}
               />
               {errors.password && <p className="mt-1 text-[10px] text-red-500 font-bold uppercase">{errors.password}</p>}
             </div>
